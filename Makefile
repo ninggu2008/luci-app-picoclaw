@@ -109,7 +109,7 @@ define Package/luci-app-picoclaw/install
 
     $(INSTALL_DIR) $(1)/usr/share/rpcd/ucode
     $(INSTALL_DATA) \
-        ./files/usr/share/rpcd/luci.picoclaw.uc \
+        ./files/usr/share/rpcd/ucode/luci.picoclaw.uc \
         $(1)/usr/share/rpcd/ucode/luci.picoclaw.uc
 
     # ----- rpcd ACL -----
