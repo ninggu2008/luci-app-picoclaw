@@ -221,20 +221,24 @@ function port_listening(port) {
 }
 
 function service_state(port) {
+	/* Always probe the port: even when a pid is known the process may not be
+	 * serving (e.g. a launcher that binds 127.0.0.1 only, or one that is not
+	 * an HTTP server at all).  get_status reports it as `port_open`. */
+	const open = port_listening(port);
 	let pid = pidfile_pid();
 
 	if (pid != null)
-		return { running: true, pid: pid, source: 'pidfile' };
+		return { running: true, pid: pid, source: 'pidfile', port_open: open };
 
 	pid = proc_scan_pid();
 
 	if (pid != null)
-		return { running: true, pid: pid, source: 'proc' };
+		return { running: true, pid: pid, source: 'proc', port_open: open };
 
-	if (port_listening(port))
-		return { running: true, pid: null, source: 'port' };
+	if (open)
+		return { running: true, pid: null, source: 'port', port_open: true };
 
-	return { running: false, pid: null, source: 'none' };
+	return { running: false, pid: null, source: 'none', port_open: false };
 }
 
 /* Autostart == the /etc/rc.d/S* symlink created by `/etc/init.d/... enable`. */
@@ -379,6 +383,7 @@ const methods = {
 				running:      state.running,
 				pid:          state.pid,
 				port:         port,
+				port_open:    state.port_open,
 				autostart:    autostart_enabled(),
 				service:      SERVICE,
 				launcher:     launcher ? launcher.path : LAUNCHER,

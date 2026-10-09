@@ -160,6 +160,9 @@ msgstr "以 PICOCLAW_VERBOSITY 环境变量传给启动器（0..3）。"
 msgid "placeholder launcher, not the real picoclaw"
 msgstr "占位启动器（非真正的 picoclaw）"
 
+msgid "not listening"
+msgstr "未监听"
+
 msgid "Backend"
 msgstr "后端"
 

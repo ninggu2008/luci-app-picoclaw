@@ -216,23 +216,27 @@ local function port_listening(port)
 end
 
 local function service_state(port)
-	local pid = pidfile_pid()
+	-- Always probe the port: even when a pid is known the process may not be
+	-- serving (e.g. a launcher that binds 127.0.0.1 only, or one that is not
+	-- an HTTP server at all).  get_status reports it as `port_open`.
+	local open = port_listening(port)
+	local pid  = pidfile_pid()
 
 	if pid then
-		return { running = true, pid = pid, source = "pidfile" }
+		return { running = true, pid = pid, source = "pidfile", port_open = open }
 	end
 
 	pid = proc_scan_pid()
 
 	if pid then
-		return { running = true, pid = pid, source = "proc" }
+		return { running = true, pid = pid, source = "proc", port_open = open }
 	end
 
-	if port_listening(port) then
-		return { running = true, pid = nil, source = "port" }
+	if open then
+		return { running = true, pid = nil, source = "port", port_open = true }
 	end
 
-	return { running = false, pid = nil, source = "none" }
+	return { running = false, pid = nil, source = "none", port_open = false }
 end
 
 -- Autostart == the /etc/rc.d/S* symlink created by
@@ -376,6 +380,7 @@ function M.get_status()
 		running      = state.running,
 		pid          = state.pid,
 		port         = port,
+		port_open    = state.port_open,
 		autostart    = autostart_enabled(),
 		service      = SERVICE,
 		launcher     = launcher or LAUNCHER,

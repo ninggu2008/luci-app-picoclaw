@@ -86,6 +86,7 @@
         backend_local:    "<%:in-process fallback%>",
         backend_warn:     "<%:The rpcd object luci.picoclaw is unavailable, using the in-process backend instead%>",
         placeholder:      "<%:placeholder launcher, not the real picoclaw%>",
+        port_closed:      "<%:not listening%>",
         action_failed:    "<%:Action failed%>",
         action_ok:        "<%:Action '%s' succeeded%>",
         action_sending:   "<%:Sending action: %s%>"
@@ -194,7 +195,11 @@
         setTitle("ps-state", d.state_source ? ("state source: " + d.state_source) : "");
 
         setText("ps-pid", (d.pid != null) ? String(d.pid) : "—");
-        setText("ps-port", (d.port != null) ? String(d.port) : "—");
+        // Point out the confusing case: the process is up but nothing serves
+        // the configured port (launcher bound to 127.0.0.1, wrong port, or
+        // not an HTTP server at all).
+        setText("ps-port", ((d.port != null) ? String(d.port) : "—")
+            + ((state.running && d.port_open === false) ? " (" + STR.port_closed + ")" : ""));
         setHTML("ps-autostart", state.autostart
             ? '<span class="badge badge-info">' + STR.autostart_on + '</span>'
             : '<span class="badge badge-neutral">' + STR.autostart_off + '</span>');
