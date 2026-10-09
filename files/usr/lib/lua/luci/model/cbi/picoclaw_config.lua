@@ -72,27 +72,30 @@ o = s:option(Value, "port", _("Listen port"))
 o.default     = "18800"
 o.datatype    = "port"
 o.rmempty     = false
-o.description = _("TCP port the launcher binds. Must be 1..65535.")
+o.description = _("TCP port the launcher binds (passed as -port). Must be "
+    .. "1..65535.")
 
 -- Extra launcher arguments.  picoclaw-launcher binds 127.0.0.1 only unless it
 -- is started with -public, which makes the WebUI unreachable from the LAN.
 o = s:option(Value, "args", _("Extra arguments"))
 o.default     = "-no-browser -public"
 o.rmempty     = true
-o.description = _("Passed to the launcher as separate arguments (split on "
-    .. "spaces, no shell quoting). picoclaw-launcher needs "
-    .. "`-no-browser -public` to listen on the LAN address instead of "
-    .. "127.0.0.1; clear this field for launchers that do not know these "
-    .. "flags.")
+o.description = _("Extra launcher options, passed as separate arguments "
+    .. "(split on spaces, no shell quoting, flags before the config file). "
+    .. "`-no-browser -public` is what picoclaw-launcher needs to serve on the "
+    .. "LAN instead of 127.0.0.1; other useful flags: `-d` (debug), "
+    .. "`-lang zh`, `-host <addr>`, `-console`. Clear this field for launchers "
+    .. "that do not know these flags.")
 
 -- picoclaw's own configuration file (JSON).  This is NOT this package's UCI
 -- file: the launcher parses the given path as JSON.
 o = s:option(Value, "config_file", _("Launcher config file"))
 o.default     = ""
 o.rmempty     = true
-o.description = _("Path to picoclaw's own JSON configuration file, passed as "
-    .. "PICOCLAW_CONFIG. Leave empty to let the launcher use its default - do "
-    .. "not point this at /etc/config/picoclaw, which is UCI, not JSON.")
+o.description = _("Absolute path to picoclaw's own JSON configuration file, "
+    .. "passed to the launcher as its positional config argument. Leave empty "
+    .. "for the launcher default (~/.picoclaw/config.json) - never point this "
+    .. "at /etc/config/picoclaw, which is UCI, not JSON.")
 
 -- Log destination
 o = s:option(ListValue, "log_alt", _("Log destination"))
@@ -110,6 +113,7 @@ o:value("0", _("Quiet"))
 o:value("1", _("Normal"))
 o:value("2", _("Verbose"))
 o:value("3", _("Debug"))
-o.description = _("Forwarded to the launcher as PICOCLAW_VERBOSITY (0..3).")
+o.description = _("2 and 3 start the launcher with -d/debug; 0 and 1 do not. "
+    .. "(Also exported as PICOCLAW_VERBOSITY for launchers that read it.)")
 
 return m

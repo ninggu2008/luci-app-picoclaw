@@ -263,36 +263,45 @@ package, `/usr/libexec/picoclaw-launcher-placeholder`, which serves a
 self-identifying page on TCP/18800 so the "Open WebUI" button in the Status
 page is functional right after installation.
 
-The real launcher must respect the following env vars set by the init
-script:
+### Launcher command line
+
+`picoclaw-launcher` is started as (see `picoclaw-launcher -h`):
+
+```
+/bin/sh -c 'echo $$ > /var/run/picoclaw-webui.pid; shift; exec "$@"' sh \
+    <pidfile> /opt/picoclaw/picoclaw-launcher \
+    -port 18800 [-d] [-no-browser -public ...] [config.json]
+```
+
+| UCI option               | Launcher argument                        |
+| ------------------------ | ---------------------------------------- |
+| `picoclaw.webui.port`    | `-port <port>`                           |
+| `picoclaw.webui.verbosity` | `-d` when 2 or 3 (debug), nothing for 0/1 |
+| `picoclaw.webui.args`    | extra options, e.g. `-no-browser -public`, `-d`, `-lang zh`, `-host <addr>`, `-console`; flags are inserted before the config path |
+| `picoclaw.webui.config_file` | positional `config.json` argument (last); empty = launcher default `~/.picoclaw/config.json` |
+
+All flags precede the positional config argument, because Go's flag parser
+stops at the first non-flag argument.  Each option is passed as its own
+`argv` word; nothing goes through a shell, so no value can be interpreted by
+one.
+
+The instance also gets these environment variables, which are **this
+package's convention** - `picoclaw-launcher` itself ignores them, the bundled
+fallback reads them, and other launchers may honour them:
 
 | Variable             | Meaning                                |
 | -------------------- | -------------------------------------- |
-| `PICOCLAW_PORT`      | TCP port to bind (1..65535)             |
-| `PICOCLAW_VERBOSITY` | 0..3                                   |
+| `HOME`               | `/root` (picoclaw resolves `~/.picoclaw/config.json`) |
+| `PICOCLAW_PORT`      | configured port                        |
+| `PICOCLAW_VERBOSITY` | configured verbosity (0..3)             |
 | `PICOCLAW_LOGFILE`   | log file path                          |
-| `PICOCLAW_CONFIG`    | path to **picoclaw's own JSON config** - only exported when `picoclaw.webui.config_file` is set, never pointed at the UCI file |
-| `PICOCLAW_DOCROOT`   | docroot used by the fallback's uhttpd (default `/var/lib/picoclaw-placeholder`) |
+| `PICOCLAW_DOCROOT`   | docroot for the fallback's uhttpd       |
 
-These names are this package's convention; a launcher that does not read
-them can still be configured through the `args` option.  Do **not** point
-`config_file`/`PICOCLAW_CONFIG` at `/etc/config/picoclaw`: that file is UCI,
-while the launcher parses the given path as JSON (it fails with
-`config.json syntax error ... invalid character 'c'`).
-
-Extra command line arguments are configured with the UCI option
-`picoclaw.webui.args` (LuCI: *Configuration -> Extra arguments*).  It defaults
-to `-no-browser -public`, which is what `picoclaw-launcher` needs in order to
-listen on the LAN address - without `-public` it binds `127.0.0.1` only and
-the WebUI is unreachable from other hosts.  The value is split on whitespace
-and passed as separate `argv` words (no shell, no quoting); clear the field
-for launchers that do not know these flags::
-
-```sh
-uci set picoclaw.webui.args='-no-browser -public'
-uci commit picoclaw
-/etc/init.d/picoclaw-webui restart
-```
+`PICOCLAW_CONFIG` is deliberately **not** exported: `picoclaw-launcher`
+treats it as a JSON config path, and pointing it at the UCI file
+`/etc/config/picoclaw` makes the WebUI fail with
+`config.json syntax error ... invalid character 'c'`.  Use the positional
+`config_file` option instead.
 
 It must also run as a **foreground** process: procd supervises the pid it
 started and treats any exit as a crash.  A launcher that forks into the

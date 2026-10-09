@@ -145,17 +145,11 @@ msgstr "picoclaw WebUI 配置。点击“保存并应用”后服务会重启；
 msgid "Start the picoclaw-webui service at boot. When you save this page the service is restarted automatically."
 msgstr "开机时启动 picoclaw-webui 服务。保存本页后服务会自动重启。"
 
-msgid "TCP port the launcher binds. Must be 1..65535."
-msgstr "启动器监听的 TCP 端口，范围为 1..65535。"
-
 msgid "picoclaw-webui.log (default)"
 msgstr "picoclaw-webui.log（默认）"
 
 msgid "Where to read logs from when the user opens the Logs tab. Setting this to `syslog` mixes picoclaw output with other system logs."
 msgstr "打开“日志”页面时读取日志的位置。设为 `syslog` 会将 picoclaw 输出与其他系统日志混在一起。"
-
-msgid "Forwarded to the launcher as PICOCLAW_VERBOSITY (0..3)."
-msgstr "以 PICOCLAW_VERBOSITY 环境变量传给启动器（0..3）。"
 
 msgid "placeholder launcher, not the real picoclaw"
 msgstr "占位启动器（非真正的 picoclaw）"
@@ -195,3 +189,21 @@ msgstr "已启用"
 
 msgid "disabled"
 msgstr "已禁用"
+
+msgid "TCP port the launcher binds (passed as -port). Must be 1..65535."
+msgstr "启动器监听的 TCP 端口（以 -port 传入），范围 1..65535。"
+
+msgid "Extra arguments"
+msgstr "额外参数"
+
+msgid "Extra launcher options, passed as separate arguments (split on spaces, no shell quoting, flags before the config file). `-no-browser -public` is what picoclaw-launcher needs to serve on the LAN instead of 127.0.0.1; other useful flags: `-d` (debug), `-lang zh`, `-host <addr>`, `-console`. Clear this field for launchers that do not know these flags."
+msgstr "传给启动器的额外选项（按空格拆成独立参数，不经 shell 解析；flag 必须排在配置文件参数之前）。`-no-browser -public` 是 picoclaw-launcher 监听局域网地址（而不是仅 127.0.0.1）所必需的；其他常用参数：`-d`（调试）、`-lang zh`、`-host <addr>`、`-console`。若启动器不识别这些参数，请清空本字段。"
+
+msgid "Launcher config file"
+msgstr "启动器配置文件"
+
+msgid "Absolute path to picoclaw's own JSON configuration file, passed to the launcher as its positional config argument. Leave empty for the launcher default (~/.picoclaw/config.json) - never point this at /etc/config/picoclaw, which is UCI, not JSON."
+msgstr "picoclaw 自身 JSON 配置文件的绝对路径，作为最后一个位置参数传给启动器。留空则使用启动器默认值（~/.picoclaw/config.json）。切勿指向 /etc/config/picoclaw——那是 UCI，不是 JSON。"
+
+msgid "2 and 3 start the launcher with -d/debug; 0 and 1 do not. (Also exported as PICOCLAW_VERBOSITY for launchers that read it.)"
+msgstr "2 和 3 会以 -d/debug 启动启动器，0 和 1 不会。（同时导出为 PICOCLAW_VERBOSITY，供读取该变量的启动器使用。）"

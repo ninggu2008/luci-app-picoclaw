@@ -123,12 +123,25 @@ ensure_logfile() {
 # ---------------------------------------------------------------------------
 
 start_service() {
-    local port verbosity prog args config_file
+    local port verbosity prog args config_file dbg
 
     port=$(uci_get port 18800)
     verbosity=$(uci_get verbosity 1)
     args=$(uci_get args '')
     config_file=$(uci_get config_file '')
+
+    case "$port" in
+        ''|*[!0-9]*)
+            log "WARN: invalid port '$port', falling back to 18800"
+            port=18800
+            ;;
+    esac
+
+    # picoclaw-launcher has no numeric verbosity flag, only -d/-debug.
+    dbg=""
+    case "$verbosity" in
+        2|3) dbg="-d" ;;
+    esac
 
     prog=$(resolve_launcher)
 
@@ -149,39 +162,48 @@ start_service() {
 
     # The instance command is a tiny wrapper:
     #   $1        -> pidfile to create (before the launcher starts)
-    #   $2 ...    -> launcher plus its extra arguments
-    # The launcher's arguments are passed as separate argv words, never
-    # interpolated into shell code, so nothing in the `args` UCI option can be
-    # interpreted by a shell.  `set -f` stops the unquoted expansion below
-    # from globbing.  (procd's `pidfile` parameter cannot be used: it does not
-    # exist on all supported releases and would duplicate the unlink, see
-    # below.)
+    #   $2 ...    -> launcher plus its arguments
+    # Arguments are passed as separate argv words, never interpolated into
+    # shell code, so nothing in the `args` UCI option can be interpreted by a
+    # shell.  `set -f` stops the unquoted expansion below from globbing.
+    # (procd's `pidfile` parameter cannot be used: it does not exist on all
+    # supported releases and would duplicate the unlink, see below.)
+    #
+    # picoclaw-launcher interface (from `picoclaw-launcher -h`):
+    #   -port <port>     listen port
+    #   -no-browser      do not try to open a browser (headless router)
+    #   -public          listen on all interfaces instead of localhost only
+    #   -host <host>     explicit bind address (overrides -public)
+    #   -d / -debug      debug logging
+    #   -console         console mode (no web console)
+    #   -lang en|zh      UI language
+    #   [config.json]    POSITIONAL config path; Go's flag parser stops at the
+    #                    first non-flag argument, so all flags must come first
+    #                    and the config path must come last.
+    # The port and the config path have their own UCI options; anything else
+    # the launcher needs (`-no-browser -public` by default) comes from `args`.
     set -f
-    # shellcheck disable=SC2086  # deliberate word splitting of the args list
-    procd_set_param command /bin/sh -c 'echo $$ > "$1"; shift; exec "$@"' \
-        sh "$PIDFILE" "$PROG" $args
+    if [ -n "$config_file" ]; then
+        # shellcheck disable=SC2086  # deliberate word splitting of the args list
+        procd_set_param command /bin/sh -c 'echo $$ > "$1"; shift; exec "$@"' \
+            sh "$PIDFILE" "$PROG" -port "$port" $dbg $args "$config_file"
+    else
+        # shellcheck disable=SC2086  # deliberate word splitting of the args list
+        procd_set_param command /bin/sh -c 'echo $$ > "$1"; shift; exec "$@"' \
+            sh "$PIDFILE" "$PROG" -port "$port" $dbg $args
+    fi
     set +f
 
-    # PICOCLAW_CONFIG must point at *picoclaw's own* configuration file (JSON) -
-    # NOT at this package's UCI file /etc/config/picoclaw, which the launcher
-    # would try to parse as JSON and fail with
-    #   config.json syntax error at line 2 ... invalid character 'c'
-    # It is only exported when the user configured a path; otherwise the
-    # launcher keeps using its own default.  NOTE: the PICOCLAW_* names are
-    # this package's convention - a launcher that does not read them can still
-    # be configured through the `args` option above.
-    if [ -n "$config_file" ]; then
-        procd_set_param env \
-            PICOCLAW_PORT="$port" \
-            PICOCLAW_VERBOSITY="$verbosity" \
-            PICOCLAW_CONFIG="$config_file" \
-            PICOCLAW_LOGFILE="$LOGFILE"
-    else
-        procd_set_param env \
-            PICOCLAW_PORT="$port" \
-            PICOCLAW_VERBOSITY="$verbosity" \
-            PICOCLAW_LOGFILE="$LOGFILE"
-    fi
+    # PICOCLAW_* is this package's own convention: the bundled fallback (and
+    # any launcher that chooses to honour it) reads it, picoclaw-launcher
+    # itself does not - it gets everything through the command line above.
+    # HOME is exported because picoclaw-launcher resolves its default config
+    # as ~/.picoclaw/config.json and procd instances have no HOME by default.
+    procd_set_param env \
+        HOME=/root \
+        PICOCLAW_PORT="$port" \
+        PICOCLAW_VERBOSITY="$verbosity" \
+        PICOCLAW_LOGFILE="$LOGFILE"
 
     # Restart the instance when the configuration file changes (procd
     # watches this path), and respawn it if it dies.
