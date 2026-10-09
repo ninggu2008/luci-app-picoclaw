@@ -37,10 +37,11 @@ LAUNCHER=/opt/picoclaw/picoclaw-launcher
 PLACEHOLDER=/usr/libexec/picoclaw-launcher-placeholder
 PROG="$LAUNCHER"
 
-# Liveness state. The pid is written by the instance wrapper below (procd
-# only gained the `pidfile` parameter after the 24.10.x releases) and the
-# Status page uses it - together with a /proc scan and a check on the
-# configured port - to decide whether the service is running.
+# Liveness state. This script owns the file: the instance wrapper below writes
+# the pid and stop_service() removes it.  procd's own `pidfile` parameter is
+# not used on purpose (see start_service), so the Status page relies on this
+# file - together with a /proc scan and a check on the configured port - to
+# decide whether the service is running.
 PIDFILE=/var/run/picoclaw-webui.pid
 LOGFILE=/var/log/picoclaw-webui.log
 
@@ -144,10 +145,11 @@ start_service() {
 
     procd_open_instance
 
-    # procd only learned the `pidfile` instance parameter after the 24.10.x
-    # releases (2026-03), so write the pidfile ourselves: the shell writes
-    # its own $$ and then exec()s the launcher, keeping the pid valid.  The
-    # Status page uses this file as one of its liveness signals.
+    # The instance command is a tiny wrapper: the shell writes its own $$ into
+    # the pidfile and then exec()s the launcher, so the recorded pid stays
+    # valid and the file is created before the launcher does anything slow.
+    # (procd's `pidfile` parameter cannot be used: it does not exist on all
+    # supported releases and would duplicate the unlink, see below.)
     procd_set_param command /bin/sh -c "echo \$\$ > \"$PIDFILE\"; exec \"$PROG\""
     procd_set_param env \
         PICOCLAW_PORT="$port" \
@@ -162,9 +164,13 @@ start_service() {
     procd_set_param stdout 1
     procd_set_param stderr 1
 
-    # Harmless and future proof: on procd releases that support the
-    # parameter it writes the very same pid as the wrapper above.
-    procd_set_param pidfile "$PIDFILE"
+    # Deliberately NO `procd_set_param pidfile` here, although procd
+    # releases after 24.10.x support it: the file is owned by the wrapper
+    # above and removed by stop_service().  Letting procd manage it as well
+    # makes both sides unlink the same path, and the loser logs
+    # "Failed to remove pidfile: ...: No such file or directory" on every
+    # stop.  Writing it ourselves also behaves identically on procd
+    # versions without the parameter.
 
     procd_close_instance
 
