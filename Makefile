@@ -24,15 +24,15 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 # Build deps - no compilation needed, pure Lua + shell.
 PKG_BUILD_DEPENDS:=
 
-# Runtime deps - note: this package does NOT pull in picoclaw itself.
-# `picoclaw-webui` is the expected separate package that ships
-# /opt/picoclaw/picoclaw-launcher. Declared here so the UI cannot be
-# installed without it (and so users see the dependency).
+# Runtime deps. Note: this package ships the placeholder launcher at
+# /opt/picoclaw/picoclaw-launcher (see INSTALL.md for the real-picoclaw
+# overlay procedure); we do NOT depend on an external `picoclaw-webui`
+# package because that would break `make package/luci-app-picoclaw/compile`
+# against a stock OpenWrt/ImmortalWRT buildroot.
 LUCI_PKG_DEPENDS:= \
     +luci-base \
     +rpcd \
-    +cgi-io \
-    +picoclaw-webui
+    +cgi-io
 
 include $(INCLUDE_DIR)/package.mk
 

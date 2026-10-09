@@ -1,5 +1,7 @@
 # luci-app-picoclaw
 
+[![Build IPK](https://github.com/ninggu2008/luci-app-picoclaw/actions/workflows/build.yml/badge.svg)](https://github.com/ninggu2008/luci-app-picoclaw/actions/workflows/build.yml)
+
 LuCI web interface for managing the `picoclaw-webui` service on
 ImmortalWRT / OpenWrt. Provides status, start/stop/restart, autostart
 toggle and a logs viewer for the launcher living at
@@ -44,6 +46,8 @@ exposed.** See `SECURITY.md` for the threat model.
 
 ## Build
 
+### From source (in buildroot)
+
 ```sh
 # from the OpenWrt / ImmortalWRT build root
 cp -R luci-app-picoclaw package/luci-app-picoclaw
@@ -56,6 +60,18 @@ make menuconfig
 
 make package/luci-app-picoclaw/{clean,compile} V=s
 ls bin/packages/<arch>/luci/luci-app-picoclaw_*.ipk
+```
+
+### Pre-built (from CI / Releases)
+
+```sh
+# Latest tag
+curl -L -o /tmp/luci-app-picoclaw.ipk \
+    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_21.02.7_x86_64.ipk
+opkg install /tmp/luci-app-picoclaw.ipk
+
+# Or pick from the Actions workflow artifacts page:
+#   https://github.com/ninggu2008/luci-app-picoclaw/actions/workflows/build.yml
 ```
 
 ## Install

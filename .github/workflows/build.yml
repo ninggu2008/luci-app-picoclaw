@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build luci-app-picoclaw .ipk for several ImmortalWRT / OpenWrt targets.
+#
+# Triggers:
+#   * push to main  -> builds + uploads artifact
+#   * tag v*        -> builds + attaches .ipk to a GitHub Release
+#   * pull_request  -> builds (verification only)
+#   * workflow_dispatch -> manual run
+#
+# How it works:
+#   The openwrt/gh-action-sdk action:
+#     1. pulls `immortalwrt/sdk:<release>-<arch>` (override via IMAGE_PREFIX)
+#     2. registers this repo as a feed (`src-link`)
+#     3. runs `make package/luci-app-picoclaw/compile`
+#     4. copies the produced .ipk to ARTIFACT_DIR
+
+name: Build IPK
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "ImmortalWRT / OpenWrt release (e.g. 21.02.7, 22.03.3)"
+        required: false
+        default: "21.02.7"
+      arch:
+        description: "Target architecture"
+        required: false
+        default: "x86_64"
+
+permissions:
+  contents: read
+
+# Cancel any in-flight run for the same ref.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Build matrix
+  # ---------------------------------------------------------------------
+  build:
+    name: "${{ matrix.release }} / ${{ matrix.arch }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ImmortalWRT 21.02
+          - release: 21.02.7
+            arch: x86_64
+          - release: 21.02.7
+            arch: aarch64_cortex-a53
+          - release: 21.02.7
+            arch: mipsel_24kc
+          - release: 21.02.7
+            arch: arm_cortex-a7_neon-vfpv4
+          # Legacy / fallback (smaller but slower)
+          - release: 19.07.10
+            arch: x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Override release/arch (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "RELEASE=${{ github.event.inputs.release }}" >> $GITHUB_ENV
+          echo "ARCH=${{ github.event.inputs.arch }}" >> $GITHUB_ENV
+
+      - name: Build IPK
+        uses: openwrt/gh-action-sdk@v2
+        env:
+          REPO_URL:             https://github.com/${{ github.repository }}
+          REPO_BRANCH:          ${{ github.ref_name }}
+          TARGET:               ${{ matrix.arch }}
+          RELEASE:              ${{ matrix.release }}
+          IMAGE_PREFIX:         immortalwrt
+          PACKAGES:             luci-app-picoclaw
+          ARTIFACT_DIR:         artifacts
+          ARTIFACT_RETENTION_DAYS: 14
+          BUILD_LOG:            build.log
+
+      - name: Show build log tail
+        if: always()
+        run: |
+          if [ -f artifacts/build.log ]; then
+            tail -n 80 artifacts/build.log
+          fi
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-picoclaw-${{ matrix.release }}-${{ matrix.arch }}
+          path: artifacts/bin/packages/*/luci/luci-app-picoclaw_*.ipk
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # Aggregate: collect artifacts from a tag run, create GitHub Release
+  # ---------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all .ipk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-all: false
+
+      - name: List artifacts
+        run: |
+          echo "Collected artifacts:"
+          find dist -type f -name '*.ipk' -print
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/*.ipk
