@@ -92,10 +92,14 @@ define Package/luci-app-picoclaw/install
     #   /usr/lib/rpcd/luci.picoclaw       -- legacy Lua plugin (rpcd
     #                                        <= 2026.07.19 still loads
     #                                        /usr/lib/rpcd/*.lua).
-    #   /usr/share/rpcd/luci.picoclaw.uc  -- ucode plugin (rpcd 2026.07.19
-    #                                        removed the Lua loader; only
-    #                                        rpcd-mod-ucode loads plugins,
-    #                                        from /usr/share/rpcd/*.uc).
+    #   /usr/share/rpcd/ucode/luci.picoclaw.uc
+    #                                     -- ucode plugin. rpcd 2026.07.19
+    #                                        removed the Lua loader;
+    #                                        rpcd-mod-ucode loads plugins
+    #                                        from /usr/share/rpcd/ucode/
+    #                                        (confirmed via `strings
+    #                                        /usr/lib/rpcd/ucode.so` ->
+    #                                        "/usr/share/rpcd/ucode/%s").
     # Whichever rpcd is in use picks one of them; the other is ignored
     # but harmless.
     $(INSTALL_DIR) $(1)/usr/lib/rpcd
@@ -103,10 +107,10 @@ define Package/luci-app-picoclaw/install
         ./files/usr/lib/rpcd/luci.picoclaw \
         $(1)/usr/lib/rpcd/luci.picoclaw
 
-    $(INSTALL_DIR) $(1)/usr/share/rpcd
+    $(INSTALL_DIR) $(1)/usr/share/rpcd/ucode
     $(INSTALL_DATA) \
         ./files/usr/share/rpcd/luci.picoclaw.uc \
-        $(1)/usr/share/rpcd/luci.picoclaw.uc
+        $(1)/usr/share/rpcd/ucode/luci.picoclaw.uc
 
     # ----- rpcd ACL -----
     $(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
