@@ -1,10 +1,8 @@
 <%#
     picoclaw/logs - logs viewer.
 
-    Polls the rpcd `luci.picoclaw.get_logs` method on demand. The
-    "Clear" button is intentionally a no-op in this template; clearing
-    log files is a privileged operation and is intentionally omitted
-    from the UI.
+    Polls the JSON endpoint backed by `luci.picoclaw.get_logs`. Clearing log
+    files is a privileged operation and is intentionally not offered here.
 -%>
 
 <%+header%>
@@ -63,7 +61,7 @@
         el.className = "alert-message alert-" + (kind || "info");
         el.textContent = msg;
         el.style.display = "block";
-        setTimeout(function () { el.style.display = "none"; }, 4000);
+        setTimeout(function () { el.style.display = "none"; }, 6000);
     }
 
     function escape(s) {
@@ -76,11 +74,14 @@
 
     function render(data) {
         if (!data || !data.ok) {
+            // Keep whatever is on screen; only report the failure.
             flash((data && data.error) || "<%:Logs unavailable%>", "warning");
             return;
         }
+
         var d = data.data || { lines: [] };
         $("pl-path").textContent = d.path + " (" + (d.total || 0) + " lines)";
+
         var out = $("pl-out");
         out.innerHTML = (d.lines && d.lines.length)
             ? d.lines.map(escape).join("\n")
@@ -91,9 +92,9 @@
     function refresh() {
         var lines = parseInt($("pl-lines").value, 10) || 200;
         XHR.get(LOGS_URL, { lines: lines }, function (x, data) {
-            try {
-                if (typeof data === "string") data = JSON.parse(data);
-            } catch (e) { data = null; }
+            if (typeof data === "string") {
+                try { data = JSON.parse(data); } catch (e) { data = null; }
+            }
             render(data);
         });
     }

@@ -3,9 +3,30 @@
 [![Build IPK](https://github.com/ninggu2008/luci-app-picoclaw/actions/workflows/build.yml/badge.svg)](https://github.com/ninggu2008/luci-app-picoclaw/actions/workflows/build.yml)
 
 LuCI web interface for managing the `picoclaw-webui` service on
-ImmortalWRT / OpenWrt. Provides status, start/stop/restart, autostart
-toggle and a logs viewer for the launcher living at
-`/opt/picoclaw/picoclaw-launcher` (port **18800** by default).
+OpenWrt / ImmortalWRT (**24.10** is the primary target).  Provides status,
+start/stop/restart, autostart toggle and a logs viewer for the launcher
+living at `/opt/picoclaw/picoclaw-launcher` (port **18800** by default).
+
+## Architecture
+
+The browser talks to JSON endpoints in the LuCI controller.  The controller
+uses two interchangeable backends with identical semantics:
+
+1. the ubus object **`luci.picoclaw`**, provided by an rpcd **ucode** plugin
+   (`/usr/share/rpcd/ucode/luci.picoclaw.uc`) and gated by
+   `/usr/share/rpcd/acl.d/40-picoclaw.json` — used whenever ubus is
+   reachable;
+2. the in-process Lua backend `luci/picoclaw.lua`, used as a fallback when
+   rpcd/the plugin is unavailable (not reloaded after install, missing
+   `rpcd-mod-ucode`, no Lua ubus binding, ...).
+
+Both only accept a literal action whitelist and a fixed set of bounded UCI
+fields, so the fallback does not widen the attack surface.  See
+`SECURITY.md`.
+
+> rpcd has **no Lua plugin support** (it `dlopen()`s `/usr/lib/rpcd/*` and
+> can only run ucode scripts from `/usr/share/rpcd/ucode/`), which is why
+> the backend is shipped in both flavours.
 
 ## Layout
 
@@ -15,14 +36,16 @@ luci-app-picoclaw/
 ├── files/
 │   ├── usr/
 │   │   ├── lib/
-│   │   │   ├── lua/luci/
-│   │   │   │   ├── controller/picoclaw.lua       # menu + JSON-RPC
-│   │   │   │   ├── model/cbi/picoclaw_config.lua # CBI config form
-│   │   │   │   └── view/picoclaw/
-│   │   │   │       ├── status.htm                # live status page
-│   │   │   │       └── logs.htm                  # logs viewer
-│   │   │   └── rpcd/luci.picoclaw                # rpcd plugin (ubus object)
-│   │   └── share/rpcd/acl.d/40-picoclaw.json     # ACL whitelist
+│   │   │   └── lua/luci/
+│   │   │       ├── picoclaw.lua                  # in-process backend
+│   │   │       ├── controller/picoclaw.lua       # menu + JSON endpoints
+│   │   │       ├── model/cbi/picoclaw_config.lua # CBI config form
+│   │   │       └── view/picoclaw/
+│   │   │           ├── status.htm                # live status page
+│   │   │           └── logs.htm                  # logs viewer
+│   │   └── share/rpcd/
+│   │       ├── ucode/luci.picoclaw.uc            # rpcd ucode plugin
+│   │       └── acl.d/40-picoclaw.json            # ACL whitelist
 │   ├── etc/
 │   │   ├── config/picoclaw                       # UCI defaults
 │   │   └── init.d/picoclaw-webui                 # procd init script
@@ -38,11 +61,21 @@ luci-app-picoclaw/
 | Status        | Live state, PID, port, autostart, uptime, version, log path          |
 | Configuration | UCI form for `enabled / port / log_alt / verbosity`                  |
 | Logs          | Last N lines of `/var/log/picoclaw-webui.log`, optional auto-refresh |
-| Open WebUI    | Redirect to the configured port on the same host                      |
+| Open WebUI    | Redirect to the configured port on the same host                     |
 
-All buttons are wired to JSON endpoints that call the ACL-restricted
-rpcd object `luci.picoclaw`. **No arbitrary command execution is
-exposed.** See `SECURITY.md` for the threat model.
+**No arbitrary command execution is exposed** — see `SECURITY.md` for the
+threat model.
+
+## Runtime dependencies (OpenWrt 24.10)
+
+| Package           | Why                                                        |
+| ----------------- | ---------------------------------------------------------- |
+| `luci-base`       | LuCI core (ucode runtime, menu, rpcd ACLs)                 |
+| `luci-lua-runtime`| Lua dispatcher, template engine, `luci.model.uci`, nixio   |
+| `luci-compat`     | classic CBI engine used by the Configuration tab            |
+| `rpcd-mod-ucode`  | loads `/usr/share/rpcd/ucode/*.uc` (the `luci.picoclaw` object) |
+
+The package `DEPENDS` line declares all of them.
 
 ## Build
 
@@ -65,36 +98,46 @@ ls bin/packages/<arch>/luci/luci-app-picoclaw_*.ipk
 ### Pre-built (from CI / Releases)
 
 ```sh
-# Latest tag
 curl -L -o /tmp/luci-app-picoclaw.ipk \
-    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_21.02.7_x86_64.ipk
+    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-2_all.ipk
 opkg install /tmp/luci-app-picoclaw.ipk
 
 # Or pick from the Actions workflow artifacts page:
 #   https://github.com/ninggu2008/luci-app-picoclaw/actions/workflows/build.yml
 ```
 
-## Install
+The CI-built IPK ships a `postinst` that clears the LuCI index caches and
+reloads rpcd, so the menu entry and the ubus object are available right
+after installation.  When installing by hand (copying `files/*` onto the
+router) run:
 
 ```sh
-# on the router
-opkg update
-opkg install luci-app-picoclaw_*.ipk
-/etc/init.d/rpcd restart
+/etc/init.d/rpcd reload
+rm -f /tmp/luci-indexcache.*
+rm -rf /tmp/luci-modulecache/
 ```
 
 ## Quick start
 
 ```sh
-uci set picoclaw.webui=section
-uci set picoclaw.webui=cfg030f00 # or `uci set picoclaw.@webui[0].enabled=1` after first run
-# Easier: open LuCI -> Services -> picoclaw -> Configuration, tick "Enable", Save.
+# Start the service now (enabled is about autostart, not about start)
+/etc/init.d/picoclaw-webui start
 
-# Or via CLI:
+# Enable it at boot (also sets picoclaw.webui.enabled=1)
+/etc/init.d/picoclaw-webui enable
+
+# ... or use the LuCI UI:
+#   Services -> picoclaw -> Status    (Start/Stop/Restart, Enable/Disable at boot)
+#   Services -> picoclaw -> Configuration
+```
+
+Equivalent UCI edits:
+
+```sh
+uci set picoclaw.@webui[0].port='18800'
 uci set picoclaw.@webui[0].enabled='1'
 uci commit picoclaw
-/etc/init.d/picoclaw-webui enable
-/etc/init.d/picoclaw-webui start
+/etc/init.d/picoclaw-webui enable     # keeps the flag and the rc.d symlink in sync
 ```
 
 The launcher exposes its version banner in

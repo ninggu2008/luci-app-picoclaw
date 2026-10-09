@@ -1,37 +1,53 @@
 --[[
     luci.controller.picoclaw
 
-    Registers the "Services -> picoclaw" menu tree and JSON-RPC HTTP
-    endpoints that proxy to the rpcd object `luci.picoclaw`.
+    Registers the "Services -> picoclaw" menu tree and the JSON endpoints
+    used by the status / logs pages.
 
-    The JSON endpoints are thin wrappers around `ubus.call("luci.picoclaw",
-    <method>, ...)` and exist solely so that browser-side AJAX can call
-    rpcd without exposing arbitrary shell execution to LuCI users.
+    Backends (in this order):
 
-    Every endpoint validates its inputs against a small whitelist and
-    returns a JSON object. There is NO `execute` / `eval` endpoint.
+      1. the rpcd ubus object `luci.picoclaw` (ACL gated, see
+         /usr/share/rpcd/acl.d/40-picoclaw.json) - preferred;
+      2. the in-process implementation `luci.picoclaw`
+         (/usr/lib/lua/luci/picoclaw.lua) - used when rpcd is not
+         reachable.
+
+    The fallback exists because the web UI must not depend on rpcd being
+    reloaded after installation or on the ucode plugin having loaded.  Both
+    backends implement the same primitives and the same literal whitelists,
+    so there is no `execute` / `eval` endpoint in either of them.
 --]]
 
 module("luci.controller.picoclaw", package.seeall)
+
+local UBUS_OBJECT = "luci.picoclaw"
+
+-- Never hard-require the in-process backend: if its Lua dependencies are
+-- broken the rpcd/ubus path should still work (and vice versa).
+local backend
+do
+    local ok, mod = pcall(require, "luci.picoclaw")
+
+    if ok and type(mod) == "table" then
+        backend = mod
+    end
+end
 
 -- ----------------------------------------------------------------------
 -- Menu
 -- ----------------------------------------------------------------------
 
 function index()
-    local has_config = nixio.fs.access("/etc/config/picoclaw")
-
-    if not has_config then
-        return
-    end
-
+    -- Everything is registered below the `admin` menu, so LuCI only exposes
+    -- it to authenticated users with admin access. `acl = true` is kept as a
+    -- defensive marker; the ubus object itself is gated by
+    -- /usr/share/rpcd/acl.d/40-picoclaw.json.
+    --
     -- Parent entry: "Services" -> "picoclaw" (aliases to status).
     --
-    -- Newer LuCI's `alias()` is implemented as `alias(path, ...) -> {
-    -- type="alias", path = { path, ... } }`. Passing a single Lua table
+    -- `alias()` must be called with varargs: passing a single Lua table
     -- produces `path = { <table> }`, which later fails in dispatcher.lua
     -- with `invalid value (table) at index 1 in table for 'concat'`.
-    -- Use varargs so the path flattens correctly.
     local root = entry(
         {"admin", "services", "picoclaw"},
         alias("admin", "services", "picoclaw", "status"),
@@ -72,31 +88,25 @@ function index()
     -- they remain inside the LuCI admin ACL scope).
     -- ------------------------------------------------------------------
 
-    entry(
-        {"admin", "services", "picoclaw", "call", "status"},
-        call("rpc_status")
-    ).acl = true
+    entry({"admin", "services", "picoclaw", "call", "status"},
+        call("rpc_status")).acl = true
 
-    entry(
-        {"admin", "services", "picoclaw", "call", "action"},
-        call("rpc_action")
-    ).acl = true
+    entry({"admin", "services", "picoclaw", "call", "action"},
+        call("rpc_action")).acl = true
 
-    entry(
-        {"admin", "services", "picoclaw", "call", "logs"},
-        call("rpc_logs")
-    ).acl = true
+    entry({"admin", "services", "picoclaw", "call", "logs"},
+        call("rpc_logs")).acl = true
 
-    entry(
-        {"admin", "services", "picoclaw", "call", "config"},
-        call("rpc_config")
-    ).acl = true
+    entry({"admin", "services", "picoclaw", "call", "config"},
+        call("rpc_config")).acl = true
 end
 
 -- ----------------------------------------------------------------------
 -- Helpers
 -- ----------------------------------------------------------------------
 
+-- Literal whitelist; duplicated in the in-process backend and in the ucode
+-- plugin so that modifying one of them is not enough to run anything else.
 local ALLOWED_ACTIONS = {
     start   = true,
     stop    = true,
@@ -118,56 +128,94 @@ local function write_json(tbl, status)
     luci.http.write_json(tbl)
 end
 
+-- Connect to ubusd through whichever Lua binding this system provides:
+-- `luci.ubus` (LuCI) or the bare `ubus` module (libubus-lua).
+local function ubus_connect()
+    local names = { "luci.ubus", "ubus" }
+
+    for _, name in ipairs(names) do
+        local mod
+
+        if pcall(function() mod = require(name) end) then
+            if type(mod) == "table" and type(mod.connect) == "function" then
+                local ok, conn = pcall(mod.connect)
+
+                if ok and conn then
+                    return conn
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+-- Call the rpcd ubus object. Returns result[, error string].
 local function call_ubus(method, params)
-    -- In LuCI Master / 26.x snapshots, `luci.ubus` is being removed in
-    -- favour of the bare `ubus` module. Try both, and pcall around each
-    -- step so a missing module / hung ubusd never makes the HTTP handler
-    -- hang (which is what kept the Status page stuck on "loading…").
-    local ubus_mod
-    pcall(function() ubus_mod = require "luci.ubus" end)
-    if not (ubus_mod and type(ubus_mod.connect) == "function") then
-        ubus_mod = nil
-        pcall(function() ubus_mod = require "ubus" end)
-    end
-    if not (ubus_mod and type(ubus_mod.connect) == "function") then
-        return nil, "ubus_module_unavailable"
-    end
+    local conn = ubus_connect()
 
-    local conn
-    pcall(function() conn = ubus_mod.connect() end)
     if not conn then
-        return nil, "ubus_unavailable"
+        return nil, "no ubus client module (luci.ubus/ubus) available"
     end
 
-    local ok_call, res = pcall(conn.call, conn, "luci.picoclaw", method, params or {})
+    local ok, res = pcall(conn.call, conn, UBUS_OBJECT, method, params or {})
     pcall(function() conn:close() end)
 
-    if not ok_call then
-        return nil, "ubus_call_threw: " .. tostring(res)
+    if not ok then
+        return nil, "ubus call failed: " .. tostring(res)
     end
+
     if res == nil then
-        -- This is the actual case the user is hitting. It almost always
-        -- means the rpcd plugin at /usr/lib/rpcd/luci.picoclaw is NOT
-        -- registered as a ubus object (rpcd not restarted, or the file
-        -- is missing / has a syntax error). Surface the most likely
-        -- cause in the error so the user can act on it.
-        return nil, "ubus_call_returned_nil: object 'luci.picoclaw' not registered "
-                 .. "(check: ls -la /usr/lib/rpcd/ ; /etc/init.d/rpcd restart)"
+        return nil, "object '" .. UBUS_OBJECT .. "' is not registered"
     end
+
     return res
+end
+
+-- Invoke `method` on the rpcd object, falling back to the in-process
+-- implementation when rpcd is unusable.
+-- Returns result[, error string, source, fallback_reason].
+local function call_backend(method, params, local_fn)
+    local res, err = call_ubus(method, params)
+
+    if type(res) == "table" then
+        return res, nil, "ubus"
+    end
+
+    local ok, local_res = pcall(local_fn)
+
+    if ok and type(local_res) == "table" then
+        return local_res, nil, "local", err
+    end
+
+    if not ok then
+        err = (err or "backend unavailable") .. "; local backend failed: " .. tostring(local_res)
+    end
+
+    return nil, (err or "backend unavailable")
+             .. " (check `ls -l /usr/share/rpcd/ucode/`, "
+             .. "`ubus -v list | grep picoclaw` and `/etc/init.d/rpcd restart`)"
 end
 
 -- Parse the incoming body as JSON if Content-Type is application/json,
 -- otherwise fall back to the standard form-urlencoded helpers.
 local function read_request_table()
     local ctype = (luci.http.getenv("CONTENT_TYPE") or ""):lower()
+
     if ctype:find("application/json", 1, true) then
         local body = luci.http.content() or ""
+
         if body == "" then return {} end
+
         local ok, parsed = pcall(luci.jsonc.parse, body)
-        if ok and type(parsed) == "table" then return parsed end
-        return nil
+
+        if ok and type(parsed) == "table" then
+            return parsed
+        end
+
+        return nil, "malformed JSON body"
     end
+
     return luci.http.formvalue() or {}
 end
 
@@ -179,15 +227,16 @@ function action_open_webui()
     local uci = require "luci.model.uci".cursor()
     local port = tonumber(uci:get("picoclaw", "webui", "port")) or 18800
 
-    -- We derive the destination host from the request's Host header. If
-    -- the header is missing / malformed we fall back to the loopback
-    -- address. Sanitisation: we only accept a hostname/IP, never a path
-    -- or query string.
+    -- Derive the destination host from the request's Host header; fall
+    -- back to the loopback address when it is missing or malformed. Only
+    -- host names / IPs are accepted, never a path or query string.
     local host = luci.http.getenv("HTTP_HOST") or ""
-    host = host:gsub(":.*$", "")     -- strip port
+    host = host:gsub(":.*$", "")
+
     if not host:match("^[%w%.%-]+$") then
         host = "127.0.0.1"
     end
+
     local scheme = (luci.http.getenv("HTTPS") == "on") and "https" or "http"
     luci.http.redirect(scheme .. "://" .. host .. ":" .. port .. "/")
 end
@@ -197,77 +246,97 @@ end
 -- ----------------------------------------------------------------------
 
 function rpc_status()
-    local res, err = call_ubus("get_status")
+    local res, err, src, why = call_backend("get_status", nil,
+        function() return backend and backend.get_status() end)
+
     if not res then
-        write_json({ ok = false, error = err or "ubus call failed" }, 500)
+        write_json({ ok = false, error = err or "status unavailable" }, 500)
         return
     end
-    write_json({ ok = true, data = res })
+
+    write_json({ ok = true, data = res, backend = src, backend_error = why })
 end
 
 function rpc_action()
-    local body, err = read_request_table()
-    if not body then
-        write_json({ ok = false, error = "bad request: " .. tostring(err) }, 400)
-        return
-    end
+    local body = read_request_table() or {}
     local action = body.action or ""
+
     if not ALLOWED_ACTIONS[action] then
         write_json({
             ok = false,
-            error = "unknown or disallowed action: " .. action
+            error = "unknown or disallowed action: " .. tostring(action)
                     .. "; allowed: start | stop | restart | enable | disable",
         }, 400)
         return
     end
-    local res, err2 = call_ubus("set_action", { action = action })
+
+    local res, err, src, why = call_backend("set_action", { action = action },
+        function() return backend and backend.set_action(action) end)
+
     if not res then
-        write_json({ ok = false, error = err2 or "ubus call failed" }, 500)
+        write_json({ ok = false, error = err or "action failed" }, 500)
         return
     end
-    write_json({ ok = true, data = res })
+
+    write_json({ ok = true, data = res, backend = src, backend_error = why })
 end
 
 function rpc_logs()
     local body = read_request_table() or {}
     local lines = tonumber(body.lines) or 200
+
     if lines < 1 then lines = 1 end
     if lines > 2000 then lines = 2000 end
-    local res, err = call_ubus("get_logs", { lines = lines })
+
+    local res, err, src, why = call_backend("get_logs", { lines = lines },
+        function() return backend and backend.get_logs(lines) end)
+
     if not res then
-        write_json({ ok = false, error = err or "ubus call failed" }, 500)
+        write_json({ ok = false, error = err or "logs unavailable" }, 500)
         return
     end
-    write_json({ ok = true, data = res })
+
+    write_json({ ok = true, data = res, backend = src, backend_error = why })
 end
 
 function rpc_config()
     local method = (luci.http.getenv("REQUEST_METHOD") or "GET"):upper()
+
     if method == "POST" then
         local body, err = read_request_table()
+
         if not body then
             write_json({ ok = false, error = "bad request: " .. tostring(err) }, 400)
             return
         end
+
         -- Whitelist fields: drop anything not in ALLOWED_CONFIG_FIELDS.
         local clean = {}
+
         for k, v in pairs(body) do
             if ALLOWED_CONFIG_FIELDS[k] and type(v) == "string" then
                 clean[k] = v
             end
         end
-        local res, err2 = call_ubus("set_config", clean)
+
+        local res, cerr, src, cwhy = call_backend("set_config", { kv = clean },
+            function() return backend and backend.set_config(clean) end)
+
         if not res then
-            write_json({ ok = false, error = err2 or "ubus call failed" }, 400)
+            write_json({ ok = false, error = cerr or "configuration rejected" }, 400)
             return
         end
-        write_json({ ok = true, data = res })
+
+        write_json({ ok = true, data = res, backend = src, backend_error = cwhy })
     else
-        local res, err = call_ubus("get_status")
+        local res, err, src, why = call_backend("get_status", nil,
+            function() return backend and backend.get_status() end)
+
         if not res then
-            write_json({ ok = false, error = err or "ubus call failed" }, 500)
+            write_json({ ok = false, error = err or "status unavailable" }, 500)
             return
         end
-        write_json({ ok = true, data = res })
+
+        write_json({ ok = true, data = res, backend = src, backend_error = why })
     end
 end

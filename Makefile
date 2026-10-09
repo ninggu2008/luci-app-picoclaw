@@ -7,32 +7,45 @@
 #   - start / stop / restart actions
 #   - autostart toggle (procd enable / disable)
 #   - logs viewer
-#   - safe JSON-RPC backend via rpcd ACL
+#   - safe JSON-RPC backend, gated by rpcd ACL
 #
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-picoclaw
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=picoclaw maintainers <noreply@example.invalid>
 PKG_LICENSE:=Apache-2.0
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
-# Build deps - no compilation needed, pure Lua + shell.
+# Build deps - no compilation needed, pure Lua + ucode + shell.
 PKG_BUILD_DEPENDS:=
 
-# Runtime deps. Note: this package ships the placeholder launcher at
-# /opt/picoclaw/picoclaw-launcher (see INSTALL.md for the real-picoclaw
-# overlay procedure); we do NOT depend on an external `picoclaw-webui`
-# package because that would break `make package/luci-app-picoclaw/compile`
-# against a stock OpenWrt/ImmortalWRT buildroot.
+# Runtime deps.
+#
+#   luci-lua-runtime  Lua dispatcher, template engine, luci.model.uci,
+#                     luci.sys, luci.i18n, nixio, libubus-lua, jsonc.
+#                     In OpenWrt 24.10 these moved out of luci-base.
+#   luci-compat       classic CBI engine (Map/TypedSection/Flag/Value/
+#                     ListValue + cbi view templates) used by the
+#                     Configuration tab. Also in luci-compat on 24.10.
+#   rpcd-mod-ucode    loads /usr/share/rpcd/ucode/*.uc and registers the
+#                     `luci.picoclaw` ubus object. (luci-base already pulls
+#                     it in, but the plugin is useless without it, so name
+#                     the dependency explicitly.)
+#
+# NOTE: this package targets OpenWrt/ImmortalWRT 23.05 and later. On older
+# releases the Lua runtime lives in luci-base and luci-lua-runtime does not
+# exist; adapt LUCI_PKG_DEPENDS accordingly.
 LUCI_PKG_DEPENDS:= \
     +luci-base \
+    +luci-lua-runtime \
+    +luci-compat \
     +rpcd \
-    +cgi-io
+    +rpcd-mod-ucode
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -55,9 +68,11 @@ define Package/luci-app-picoclaw/description
       * Logs viewer with refresh
       * UCI-driven configuration (port, autostart)
 
-    All actions are exposed through the rpcd object `luci.picoclaw`
-    and gated by `/usr/share/rpcd/acl.d/40-picoclaw.json`. The package
-    does not introduce any user-supplied shell-execution endpoint.
+    The UI uses the in-process backend /usr/lib/lua/luci/picoclaw.lua and
+    prefers the ubus object `luci.picoclaw` whenever it is available. The
+    object is provided by an rpcd ucode plugin and gated by
+    /usr/share/rpcd/acl.d/40-picoclaw.json. Neither backend introduces a
+    user-supplied shell-execution endpoint.
 endef
 
 define Build/Configure
@@ -68,7 +83,12 @@ define Package/luci-app-picoclaw/conffiles
 endef
 
 define Package/luci-app-picoclaw/install
-    # ----- LuCI Lua module path -----
+    # ----- LuCI Lua modules -----
+    $(INSTALL_DIR) $(1)/usr/lib/lua/luci
+    $(INSTALL_DATA) \
+        ./files/usr/lib/lua/luci/picoclaw.lua \
+        $(1)/usr/lib/lua/luci/picoclaw.lua
+
     $(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
     $(INSTALL_DATA) \
         ./files/usr/lib/lua/luci/controller/picoclaw.lua \
@@ -88,25 +108,10 @@ define Package/luci-app-picoclaw/install
         $(1)/usr/lib/lua/luci/view/picoclaw/logs.htm
 
     # ----- rpcd plugin -----
-    # Two backends ship in parallel:
-    #   /usr/lib/rpcd/luci.picoclaw       -- legacy Lua plugin (rpcd
-    #                                        <= 2026.07.19 still loads
-    #                                        /usr/lib/rpcd/*.lua).
-    #   /usr/share/rpcd/ucode/luci.picoclaw.uc
-    #                                     -- ucode plugin. rpcd 2026.07.19
-    #                                        removed the Lua loader;
-    #                                        rpcd-mod-ucode loads plugins
-    #                                        from /usr/share/rpcd/ucode/
-    #                                        (confirmed via `strings
-    #                                        /usr/lib/rpcd/ucode.so` ->
-    #                                        "/usr/share/rpcd/ucode/%s").
-    # Whichever rpcd is in use picks one of them; the other is ignored
-    # but harmless.
-    $(INSTALL_DIR) $(1)/usr/lib/rpcd
-    $(INSTALL_DATA) \
-        ./files/usr/lib/rpcd/luci.picoclaw \
-        $(1)/usr/lib/rpcd/luci.picoclaw
-
+    # rpcd >= 21.02 has no Lua plugin support: it dlopen()s shared objects
+    # from /usr/lib/rpcd/ and spawns executables from /usr/libexec/rpcd/.
+    # The only scripting interface is rpcd-mod-ucode, which scans
+    # /usr/share/rpcd/ucode/ (RPC_UCSCRIPT_DIRECTORY in rpcd's ucode.c).
     $(INSTALL_DIR) $(1)/usr/share/rpcd/ucode
     $(INSTALL_DATA) \
         ./files/usr/share/rpcd/ucode/luci.picoclaw.uc \
@@ -139,9 +144,17 @@ define Package/luci-app-picoclaw/install
         $(1)/opt/picoclaw/picoclaw-launcher
 endef
 
+# Drop the LuCI index caches (otherwise the new menu entry and views are
+# not picked up until the next reboot) and reload rpcd so the ucode plugin
+# is registered. rpcd re-executes itself on SIGHUP, which re-runs the
+# plugin scan - a plain `restart` works as well.
 define Package/luci-app-picoclaw/postinst
 #!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || /etc/init.d/rpcd restart >/dev/null 2>&1
+[ -n "$${IPKG_INSTROOT}" ] || {
+    rm -f /tmp/luci-indexcache.*
+    rm -rf /tmp/luci-modulecache/
+    /etc/init.d/rpcd reload >/dev/null 2>&1
+}
 exit 0
 endef
 

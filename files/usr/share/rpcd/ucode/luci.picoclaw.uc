@@ -1,32 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// luci.picoclaw - rpcd plugin (ucode version, for rpcd 2026.07.19+).
-// Loaded by rpcd-mod-ucode from /usr/share/rpcd/ucode/*.uc; the
-// rpcd 2026.07.19 release removed the legacy /usr/lib/rpcd/*.lua
-// loader.
+// luci.picoclaw - rpcd plugin (ucode flavour).
 //
-// Plugin shape (from OpenWrt rpcd source, file
-// rpcd/examples/ucode/example-plugin.uc):
+// rpcd >= 2021 loads every regular file below /usr/share/rpcd/ucode/ at
+// startup (the loader lives in rpcd's ucode plugin, see rpcd's ucode.c,
+// RPC_UCSCRIPT_DIRECTORY).  The file name may carry any extension; the
+// object name comes from the returned signature object below.
 //
-//     return {
-//         "<ubus-object>": {
-//             "<method>": {
-//                 args: { <arg-name>: <example-value> },   // optional
-//                 call: function(request) {                // `request` is
-//                                                         //  passed
-//                                                         //  positionally
-//                     return { ... };                      //  OR
-//                     request.reply(value);                //  OR
-//                     request.error(UBUS_STATUS_*);        //
-//                 }
-//             }
-//         }
-//     };
-//
-// `args` declares the expected ubus type per arg by example: the
-// runtime type of the example value IS the type. E.g. `200` -> INT32,
-// `""` -> STRING, `{}` -> TABLE. The actual value is ignored at
-// call time, only its type is enforced.
+// NOTE: rpcd does *not* support Lua plugins any more.  Anything placed in
+// /usr/lib/rpcd/ is dlopen()ed as a shared object and executables in
+// /usr/libexec/rpcd/ are spawned as helpers - a plain Lua file in
+// /usr/lib/rpcd/ can never register an ubus object on OpenWrt 21.02+.
 //
 // Methods exposed (gated by /usr/share/rpcd/acl.d/40-picoclaw.json):
 //
@@ -37,263 +21,384 @@
 //     set_action(action = "start")  -> { ok, action, message }
 //     set_config(kv = {})           -> { ok, changed }
 //
+// The LuCI web UI talks to the in-process implementation
+// (/usr/lib/lua/luci/picoclaw.lua) and only falls back to this object when
+// ubus is reachable; both implementations must stay in sync.
+//
+// UCODE PORTABILITY RULES (rpcd runs whatever ucode version the platform
+// ships - OpenWrt 24.10 pins ucode 3f64c808):
+//   * there is no `typeof` operator, use type(value)
+//   * there are no String methods, use the global match()/split() helpers
+//   * there is no global Math object, use int() (or import from 'math')
+//   * `for (x in ...)` needs `let`, not `const`
+//   * fs/uci/ubus are separate modules and must be imported, they are NOT
+//     globals in the rpcd ucode VM
+//
 // SECURITY MODEL
 // --------------
-// 1. set_action never concatenates user input into a shell command;
-//    the only subprocess invocation is
-//    `/etc/init.d/picoclaw-webui <action>` where <action> is one of
-//    five constants from ALLOWED_ACTIONS.
-// 2. set_config writes only to /config/picoclaw, fields bounded to
+// 1. set_action never concatenates user input into a shell command; the
+//    only subprocess invocation is
+//    `/etc/init.d/picoclaw-webui <action>` where <action> is one of five
+//    constants from ALLOWED_ACTIONS.
+// 2. set_config writes only to /etc/config/picoclaw, fields bounded to
 //    enumerated types and value ranges via FIELD_VALIDATORS.
-// 3. Every section is wrapped in try/catch and falls back to a safe
-//    default so a single subsystem failure never takes the whole
-//    status response down.
+// 3. Every subsystem access is wrapped in try/catch and falls back to a
+//    safe default so a single failure never takes the whole reply down.
 
-// Best-effort load probe. rpcd-mod-ucode scans /usr/share/rpcd/ucode
-// at startup; this line writes a file the moment our module is
-// compiled so we can tell "never loaded" from "loaded but a
-// method call failed". We use fs.writefile() rather than system()
-// because rpcd-mod-ucode's ucode runtime only mounts fs/ubus/uci -
-// a bare system() call would just hit `try` here and silently fail.
-try {
-    fs.writefile("/tmp/luci.picoclaw.loaded",
-        "loaded at " + time() + " pid=" + (fs.stat("/proc/self") ? "?" : "?") + "\n");
-} catch (e) {}
+'use strict';
 
-const SERVICE  = "picoclaw-webui";
-const LAUNCHER = "/opt/picoclaw/picoclaw-launcher";
-const LOG_PATH = "/var/log/picoclaw-webui.log";
-const UCI_CFG  = "picoclaw";
-const UCI_SEC  = "webui";
+import { access, lsdir, open, readfile, stat } from 'fs';
+import { cursor } from 'uci';
 
-// UBUS_STATUS_* (from /usr/lib/rpcd/ucode.so).
-const UBUS_STATUS_INVALID_ARGUMENT = 2;
-const UBUS_STATUS_UNKNOWN_ERROR    = 10;
+const SERVICE   = 'picoclaw-webui';
+const LAUNCHER  = '/opt/picoclaw/picoclaw-launcher';
+const PIDFILE   = '/var/run/picoclaw-webui.pid';
+const LOG_PATH  = '/var/log/picoclaw-webui.log';
+const SYSLOG    = '/var/log/messages';
+const RCD_DIR   = '/etc/rc.d';
+const UCI_CFG   = 'picoclaw';
+const UCI_SEC   = 'webui';
+
+/* Read at most this many bytes from the end of a log file. */
+const LOG_TAIL_BYTES = 65536;
 
 const ALLOWED_ACTIONS = {
-    start:   true,
-    stop:    true,
-    restart: true,
-    enable:  true,
-    disable: true,
+	start:   true,
+	stop:    true,
+	restart: true,
+	enable:  true,
+	disable: true,
 };
 
 const FIELD_VALIDATORS = {
-    enabled:   function(v) {
-        return v == "1" || v == "0" || v == "true" || v == "false";
-    },
-    port:      function(v) {
-        const n = +v;
-        return n == n && n >= 1 && n <= 65535;
-    },
-    log_alt:   function(v) {
-        return v == "" || v == "syslog" || v == "/var/log/picoclaw-webui.log";
-    },
-    verbosity: function(v) {
-        const n = +v;
-        return n == n && n >= 0 && n <= 3;
-    },
+	enabled:   (v) => (v == '1' || v == '0' || v == 'true' || v == 'false'),
+	port:      (v) => { const n = +v; return n == n && n >= 1 && n <= 65535; },
+	log_alt:   (v) => (v == '' || v == 'syslog' || v == LOG_PATH),
+	verbosity: (v) => { const n = +v; return n == n && n >= 0 && n <= 3; },
 };
 
-function read_port() {
-    try {
-        const c = uci.cursor();
-        const p = c.get(UCI_CFG, UCI_SEC, "port");
-        if (p != null) {
-            const n = +p;
-            if (n == n && n >= 1 && n <= 65535) return n;
-        }
-    } catch (e) { }
-    return 18800;
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/* Read a UCI option; returns `fallback` when unset, empty or unreadable. */
+function read_opt(option, fallback) {
+	try {
+		const c = cursor();
+		const v = c.get(UCI_CFG, UCI_SEC, option);
+
+		if (v != null && v != '')
+			return v;
+	}
+	catch (e) { }
+
+	return fallback;
 }
 
-return {
-    "luci.picoclaw": {
-        get_status: {
-            call: function(req) {
-                const out = {
-                    running:   false,
-                    pid:       null,
-                    port:      read_port(),
-                    autostart: false,
-                    service:   SERVICE,
-                    launcher:  LAUNCHER,
-                    log_path:  LOG_PATH,
-                };
+/* Fetch a named ubus call argument; rpcd always passes a dictionary as
+ * request.args but be defensive so a malformed call cannot throw out of
+ * the method. */
+function get_arg(request, name) {
+	try {
+		const args = request ? request.args : null;
 
-                // procd service state via ubus.
-                try {
-                    const res = ubus.call("service", "list", { name: SERVICE });
-                    if (res && res[SERVICE] && res[SERVICE].instances) {
-                        for (const k in res[SERVICE].instances) {
-                            const inst = res[SERVICE].instances[k];
-                            if (inst && inst.running) {
-                                out.running = true;
-                                out.pid = inst.pid;
-                                break;
-                            }
-                        }
-                    }
-                } catch (e) { }
+		if (type(args) == 'object')
+			return args[name];
+	}
+	catch (e) { }
 
-                // autostart: /etc/rc.d/<service> symlink.
-                try {
-                    out.autostart = !!fs.access("/etc/rc.d/" + SERVICE);
-                } catch (e) {
-                    out.autostart = false;
-                }
+	return null;
+}
 
-                // uptime (best-effort, optional).
-                if (out.pid) {
-                    try {
-                        const stat      = fs.readfile("/proc/" + out.pid + "/stat");
-                        const proc_stat = fs.readfile("/proc/stat");
-                        if (stat && proc_stat) {
-                            const btime_m  = proc_stat.match(/^btime\s+(\d+)/);
-                            const fields_m = stat.match(/\)\s+(.*)$/);
-                            if (btime_m && fields_m) {
-                                const tokens    = fields_m[1].split(/\s+/);
-                                const starttime = +tokens[19];
-                                if (starttime) {
-                                    const clk_tck = 100;
-                                    const up = time() - (+btime_m[1] + starttime / clk_tck);
-                                    if (up > 0) out.uptime_s = Math.floor(up);
-                                }
-                            }
-                        }
-                    } catch (e) { }
-                }
+function get_port() {
+	const n = +read_opt('port', 18800);
 
-                // version banner (purely informational, no execution).
-                try {
-                    const head = fs.readfile(LAUNCHER);
-                    if (head) {
-                        const m1 = head.match(/[Pp]icoclaw[-_]?launcher[-_\s]*[Vv]ersion:\s*([\w.\-]+)/);
-                        const m2 = head.match(/VERSION=["']*([\w.\-]+)/);
-                        const m  = m1 || m2;
-                        if (m) out.version = m[1];
-                    }
-                } catch (e) { }
+	return (n == n && n >= 1 && n <= 65535) ? int(n) : 18800;
+}
 
-                return out;
-            },
-        },
+function get_log_path() {
+	return (read_opt('log_alt', '') == 'syslog') ? SYSLOG : LOG_PATH;
+}
 
-        get_logs: {
-            // lines: example value `200` -> ubus declares INT32.
-            args: {
-                lines: 200,
-            },
-            call: function(req) {
-                let lines = req.args.lines;
-                if (typeof lines != "number" || lines != lines) lines = 200;
-                if (lines < 1)    lines = 1;
-                if (lines > 2000) lines = 2000;
+/* procd writes the instance pid into the pidfile configured by the init
+ * script and unlinks it again when the instance goes away, so this is a
+ * cheap, ubus-free liveness probe. */
+function read_pid() {
+	try {
+		const data = readfile(PIDFILE);
+		const pid = data ? +trim(data) : NaN;
 
-                let alt = "";
-                try {
-                    alt = uci.cursor().get(UCI_CFG, UCI_SEC, "log_alt") || "";
-                } catch (e) { }
+		if (pid > 0 && access('/proc/' + pid))
+			return int(pid);
+	}
+	catch (e) { }
 
-                // Path restricted to a hard-coded set; UCI can only
-                // select from the permitted values (see set_config
-                // validators).
-                let path = LOG_PATH;
-                if (alt == "syslog") {
-                    path = "/var/log/messages";
-                } else if (alt == "/var/log/picoclaw-webui.log") {
-                    path = alt;
-                } else if (alt != "") {
-                    path = LOG_PATH; // unknown alt: ignore
-                }
+	return null;
+}
 
-                if (!fs.access(path)) {
-                    return { lines: [], path: path, total: 0 };
-                }
+/* Autostart == the /etc/rc.d/S* symlink created by `/etc/init.d/... enable`. */
+function autostart_enabled() {
+	try {
+		const entries = lsdir(RCD_DIR);
 
-                let content = "";
-                try {
-                    content = fs.readfile(path) || "";
-                } catch (e) {
-                    return { lines: [], path: path, total: 0 };
-                }
+		for (let i = 0; i < length(entries); i++) {
+			const name = entries[i];
 
-                const all = content.split("\n");
-                if (all.length > 0 && all[all.length - 1] == "") all.pop();
-                const total = all.length;
-                const start = total > lines ? total - lines : 0;
-                return { lines: all.slice(start), path: path, total: total };
-            },
-        },
+			if (match(name, /^[SK][0-9]*picoclaw-webui$/))
+				return true;
+		}
+	}
+	catch (e) { }
 
-        set_action: {
-            // action: example value `""` -> ubus declares STRING.
-            args: {
-                action: "",
-            },
-            call: function(req) {
-                const action = req.args.action;
-                if (typeof action != "string" || !ALLOWED_ACTIONS[action]) {
-                    return req.error(UBUS_STATUS_INVALID_ARGUMENT);
-                }
-                let rc = 1;
-                try {
-                    rc = system("/etc/init.d/" + SERVICE + " " + action);
-                } catch (e) {
-                    return req.error(UBUS_STATUS_UNKNOWN_ERROR);
-                }
-                return {
-                    ok:      rc == 0,
-                    action:  action,
-                    message: rc == 0 ? "ok" : ("exit " + rc),
-                };
-            },
-        },
+	return false;
+}
 
-        set_config: {
-            // kv: example value `{}` -> ubus declares TABLE.
-            args: {
-                kv: {},
-            },
-            call: function(req) {
-                const kv = req.args.kv;
-                if (type(kv) != "object") {
-                    return req.error(UBUS_STATUS_INVALID_ARGUMENT);
-                }
-                let cursor;
-                try {
-                    cursor = uci.cursor();
-                } catch (e) {
-                    return req.error(UBUS_STATUS_UNKNOWN_ERROR);
-                }
-                const changed = [];
-                for (const k in kv) {
-                    const validate = FIELD_VALIDATORS[k];
-                    if (!validate) {
-                        return req.error(UBUS_STATUS_INVALID_ARGUMENT);
-                    }
-                    const v = kv[k];
-                    if (!validate(v)) {
-                        return req.error(UBUS_STATUS_INVALID_ARGUMENT);
-                    }
-                    let stored;
-                    if (k == "enabled") {
-                        stored = (v == "1" || v == "true") ? "1" : "0";
-                    } else if (k == "port" || k == "verbosity") {
-                        stored = "" + (+v);
-                    } else {
-                        stored = "" + v;
-                    }
-                    cursor.set(UCI_CFG, UCI_SEC, k, stored);
-                    changed.push(k);
-                }
-                try {
-                    cursor.commit(UCI_CFG);
-                } catch (e) {
-                    return req.error(UBUS_STATUS_UNKNOWN_ERROR);
-                }
-                return { ok: true, changed: changed };
-            },
-        },
-    },
+/* Process uptime derived from /proc/<pid>/stat (starttime, field 22) and
+ * the boot time in /proc/stat. */
+function process_uptime(pid) {
+	try {
+		const stat_buf = readfile('/proc/' + pid + '/stat');
+		const sys_buf  = readfile('/proc/stat');
+
+		if (stat_buf && sys_buf) {
+			const m_boot   = match(sys_buf, /btime\s+([0-9]+)/);
+			const m_fields = match(stat_buf, /\)\s+(.*)$/);
+
+			if (m_boot && m_fields) {
+				const fields    = split(m_fields[1], /\s+/);
+				const starttime = +fields[19];
+
+				if (starttime > 0) {
+					const up = time() - (+m_boot[1] + int(starttime / 100));
+
+					if (up > 0)
+						return int(up);
+				}
+			}
+		}
+	}
+	catch (e) { }
+
+	return null;
+}
+
+/* Purely informational: scan the launcher for a version banner. */
+function launcher_version() {
+	try {
+		const head = readfile(LAUNCHER);
+
+		if (head) {
+			const m = match(head, /[Pp]icoclaw[-_]?[Ll]auncher[^\n]*[Vv]ersion:[ \t]*([A-Za-z0-9._-]+)/) ||
+			          match(head, /VERSION=["']?([A-Za-z0-9._-]+)/);
+
+			if (m)
+				return m[1];
+		}
+	}
+	catch (e) { }
+
+	return null;
+}
+
+function read_log_tail(path, max_lines) {
+	const result = { lines: [], path: path, total: 0 };
+
+	try {
+		if (!access(path))
+			return result;
+
+		let size = 0;
+
+		try {
+			const st = stat(path);
+
+			if (st && st.size)
+				size = st.size;
+		}
+		catch (e) { }
+
+		const from  = (size > LOG_TAIL_BYTES) ? (size - LOG_TAIL_BYTES) : 0;
+		const f     = open(path, 'r');
+
+		if (!f)
+			return result;
+
+		let data = '';
+
+		try {
+			if (from > 0)
+				f.seek(from, 0);
+
+			data = f.read(LOG_TAIL_BYTES + 1) || '';
+		}
+		catch (e) {
+			data = '';
+		}
+
+		try {
+			f.close();
+		}
+		catch (e) { }
+
+		const all = split(data, '\n');
+
+		/* Drop the trailing empty element produced by a final newline. */
+		if (length(all) > 0 && all[length(all) - 1] == '')
+			pop(all);
+
+		/* When we started reading mid-file the first line is a fragment. */
+		if (from > 0 && length(all) > 0)
+			shift(all);
+
+		result.total = length(all);
+		result.lines = (result.total > max_lines) ? slice(all, result.total - max_lines) : all;
+	}
+	catch (e) { }
+
+	return result;
+}
+
+// ---------------------------------------------------------------------------
+// methods
+// ---------------------------------------------------------------------------
+
+const methods = {
+	get_status: {
+		call: function() {
+			const pid = read_pid();
+
+			const out = {
+				running:   (pid != null),
+				pid:       pid,
+				port:      get_port(),
+				autostart: autostart_enabled(),
+				service:   SERVICE,
+				launcher:  LAUNCHER,
+				log_path:  get_log_path(),
+			};
+
+			if (pid != null) {
+				const up = process_uptime(pid);
+
+				if (up != null)
+					out.uptime_s = up;
+			}
+
+			const version = launcher_version();
+
+			if (version)
+				out.version = version;
+
+			return out;
+		},
+	},
+
+	get_logs: {
+		/* `lines: 200` declares the ubus argument as INT32. */
+		args: {
+			lines: 200,
+		},
+
+		call: function(request) {
+			const arg   = get_arg(request, 'lines');
+			let lines   = (type(arg) == 'int' || type(arg) == 'double') ? int(arg) : 200;
+
+			if (lines < 1)
+				lines = 1;
+			else if (lines > 2000)
+				lines = 2000;
+
+			return read_log_tail(get_log_path(), lines);
+		},
+	},
+
+	set_action: {
+		/* `action: ""` declares the ubus argument as STRING. */
+		args: {
+			action: '',
+		},
+
+		call: function(request) {
+			const action = get_arg(request, 'action');
+
+			if (type(action) != 'string' || !ALLOWED_ACTIONS[action])
+				return { ok: false, action: action, message: 'unsupported action' };
+
+			let rc = 1;
+
+			try {
+				/* Bounded: a stuck init script must not block rpcd's
+				 * main loop forever. */
+				rc = system('/etc/init.d/' + SERVICE + ' ' + action, 30000);
+			}
+			catch (e) {
+				return { ok: false, action: action, message: 'invocation failed' };
+			}
+
+			return {
+				ok:      (rc == 0),
+				action:  action,
+				message: (rc == 0) ? 'ok' : ('exit ' + rc),
+			};
+		},
+	},
+
+	set_config: {
+		/* `kv: {}` declares the ubus argument as TABLE. */
+		args: {
+			kv: {},
+		},
+
+		call: function(request) {
+			const kv = get_arg(request, 'kv');
+
+			if (type(kv) != 'object')
+				return { ok: false, message: 'expected table' };
+
+			let c;
+
+			try {
+				c = cursor();
+			}
+			catch (e) {
+				return { ok: false, message: 'cannot open uci context' };
+			}
+
+			const changed = [];
+
+			for (let key in kv) {
+				const validate = FIELD_VALIDATORS[key];
+				const value    = kv[key];
+
+				if (!validate)
+					return { ok: false, message: 'unknown field: ' + key };
+
+				if (!validate(value))
+					return { ok: false, message: 'invalid value for ' + key };
+
+				let stored;
+
+				if (key == 'enabled')
+					stored = (value == '1' || value == 'true') ? '1' : '0';
+				else if (key == 'port' || key == 'verbosity')
+					stored = '' + int(+value);
+				else
+					stored = '' + value;
+
+				c.set(UCI_CFG, UCI_SEC, key, stored);
+				push(changed, key);
+			}
+
+			try {
+				c.commit(UCI_CFG);
+			}
+			catch (e) {
+				return { ok: false, message: 'commit failed' };
+			}
+
+			return { ok: true, changed: changed };
+		},
+	},
 };
+
+return { 'luci.picoclaw': methods };

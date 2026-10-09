@@ -3,14 +3,25 @@
 # picoclaw-webui - procd init script
 #
 # Lives at /etc/init.d/picoclaw-webui and is invoked by procd at the
-# configured START priority (99). All state is read from UCI section
-# `picoclaw.@webui`, so the LuCI app and this script share a single
-# source of truth.
+# configured START priority (99).  All state is read from the UCI section
+# `picoclaw.webui`, so the LuCI app and this script share a single source
+# of truth.
 #
-# The init script only consumes a small set of literal action names
-# (`start`, `stop`, `restart`, `enable`, `disable`, `running`, `status`)
-# and ignores any other argument, which is what makes the LuCI-side
-# rpcd endpoint (`luci.picoclaw.set_action`) safe to bind to it.
+# Autostart is represented in two places that must not drift apart:
+#
+#   * the UCI option `picoclaw.webui.enabled` (what the LuCI Configuration
+#     page edits and what the Status page displays), and
+#   * the /etc/rc.d/S99picoclaw-webui symlink that /etc/init.d/rcS uses to
+#     decide whether the service is started at boot.
+#
+# `enable` / `disable` below are overridden so that both are always updated
+# together, and every action re-syncs the symlink from the UCI option.  A
+# plain `start` (the Status page "Start" button) is *not* gated on the
+# enabled flag - "enabled" means "start at boot", not "may be started".
+#
+# NOTE: rc.common consumes the first two arguments before sourcing this
+# file, so no position-based argument validation is possible (or needed)
+# here - rc.common itself only dispatches commands it knows about.
 
 USE_PROCD=1
 START=99
@@ -19,8 +30,11 @@ STOP=10
 NAME=picoclaw-webui
 PROG=/opt/picoclaw/picoclaw-launcher
 
-# State shared with the procd-respawn loop.
+# State shared with the procd respawn loop. procd writes the pid here while
+# the instance is alive and removes the file when it goes away; the rpcd
+# plugin and the LuCI backend use it as a cheap liveness probe.
 PIDFILE=/var/run/picoclaw-webui.pid
+LOGFILE=/var/log/picoclaw-webui.log
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,8 +51,44 @@ log() {
     /usr/bin/logger -t picoclaw-webui -- "$@"
 }
 
+# Keep the UCI autostart flag and the /etc/rc.d symlink in sync.  The
+# symlink is what /etc/init.d/rcS evaluates at boot, the UCI option is what
+# the LuCI UI shows and writes.
+sync_autostart() {
+    if [ "$(uci_get enabled 0)" = "1" ]; then
+        [ -n "$START" ] && \
+            ln -sf "../init.d/$NAME" "$IPKG_INSTROOT/etc/rc.d/S${START}${NAME}"
+    else
+        rm -f "$IPKG_INSTROOT/etc/rc.d/S${START}${NAME}" \
+              "$IPKG_INSTROOT/etc/rc.d/K${STOP}${NAME}"
+    fi
+    return 0
+}
+
+set_uci_enabled() {
+    # IPKG_INSTROOT is set while building an image; never touch the host's
+    # UCI database in that case.
+    [ -n "$IPKG_INSTROOT" ] && return 0
+    /sbin/uci -q set "picoclaw.webui.enabled=$1" && /sbin/uci -q commit picoclaw
+    return 0
+}
+
+# rc.common's enable/disable only manage the rc.d symlink; wrap them so the
+# UCI flag follows along.
+enable() {
+    set_uci_enabled 1
+    sync_autostart
+    return 0
+}
+
+disable() {
+    set_uci_enabled 0
+    sync_autostart
+    return 0
+}
+
 ensure_logfile() {
-    [ -f /var/log/picoclaw-webui.log ] || : > /var/log/picoclaw-webui.log
+    [ -f "$LOGFILE" ] || : > "$LOGFILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -46,16 +96,10 @@ ensure_logfile() {
 # ---------------------------------------------------------------------------
 
 start_service() {
-    local enabled port verbosity
+    local port verbosity
 
-    enabled=$(uci_get enabled 0)
     port=$(uci_get port 18800)
     verbosity=$(uci_get verbosity 1)
-
-    if [ "$enabled" != "1" ]; then
-        log "start skipped: picoclaw.webui.enabled != 1"
-        return 0
-    fi
 
     if [ ! -x "$PROG" ]; then
         log "ERROR: launcher not found or not executable: $PROG"
@@ -70,76 +114,38 @@ start_service() {
         PICOCLAW_PORT="$port" \
         PICOCLAW_VERBOSITY="$verbosity" \
         PICOCLAW_CONFIG="/etc/config/picoclaw" \
-        PICOCLAW_LOGFILE="/var/log/picoclaw-webui.log"
+        PICOCLAW_LOGFILE="$LOGFILE"
 
-    # Restart on UCI commit. procd watches the path and respawns.
+    # Restart the instance when the configuration file changes (procd
+    # watches this path), and respawn it if it dies.
     procd_set_param file /etc/config/picoclaw
-
-    # Respawn parameters: threshold, retry, retry_sleep.
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1
     procd_set_param pidfile "$PIDFILE"
-
-    procd_open_trigger
-    procd_add_config_trigger "config.change" "picoclaw" \
-        /etc/init.d/"$NAME" reload
-    procd_close_trigger
 
     procd_close_instance
 
     log "instance started: port=$port verbosity=$verbosity"
 }
 
+service_triggers() {
+    # Service level trigger (instance level triggers are ignored by procd).
+    procd_add_reload_trigger picoclaw
+    sync_autostart
+}
+
 stop_service() {
-    # procd handles killing the instance. We just clean the pidfile and
+    # procd handles killing the instance; we just clean up the pidfile and
     # let the wrapper log a clean shutdown.
     log "instance stopped"
     rm -f "$PIDFILE"
 }
 
 reload_service() {
-    stop_service
-    start_service
+    sync_autostart
+
+    # Re-evaluate the instance definition: procd restarts the instance when
+    # any parameter (port, verbosity, env, watched files) changed.
+    start
 }
-
-# ---------------------------------------------------------------------------
-# extra_command handlers - used by /etc/init.d/<name> <verb>
-# ---------------------------------------------------------------------------
-
-extra_command "running" "Check whether the service is running"
-extra_command "enabled" "Check whether the service is enabled at boot"
-
-running_command() {
-    if [ -f "$PIDFILE" ] && /bin/kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-        return 0
-    fi
-    # Fallback: ask procd.
-    if /sbin/ubus call service list '{"name":"'$NAME'"}' 2>/dev/null \
-            | /bin/grep -q '"running":true'; then
-        return 0
-    fi
-    return 1
-}
-
-enabled_command() {
-    if /sbin/uci -q get "picoclaw.webui.enabled" 2>/dev/null \
-            | /bin/grep -q '^1$'; then
-        echo "enabled"
-    else
-        echo "disabled"
-    fi
-}
-
-# Hardened: refuse any unknown subcommand. Anything beyond the procd-managed
-# set (`start`, `stop`, `restart`, `reload`, `kill`, `running`, `status`)
-# and our `enabled` extra command is rejected without further action.
-case "$1" in
-    ""|start|stop|restart|reload|kill|status|running|enabled)
-        ;;
-    *)
-        log "refused unknown command: $1"
-        echo "Unknown command: $1" >&2
-        exit 2
-        ;;
-esac

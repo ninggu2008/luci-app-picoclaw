@@ -13,12 +13,12 @@
 #   files/etc/config/picoclaw
 #   files/etc/init.d/picoclaw-webui               (executable in package)
 #   files/opt/picoclaw/picoclaw-launcher          (executable in package)
+#   files/usr/lib/lua/luci/picoclaw.lua           (in-process backend)
 #   files/usr/lib/lua/luci/controller/picoclaw.lua
 #   files/usr/lib/lua/luci/model/cbi/picoclaw_config.lua
 #   files/usr/lib/lua/luci/view/picoclaw/status.htm
 #   files/usr/lib/lua/luci/view/picoclaw/logs.htm
-#   files/usr/lib/rpcd/luci.picoclaw              (legacy Lua plugin, <= rpcd 2026.07.19)
-#   files/usr/share/rpcd/ucode/luci.picoclaw.uc  (ucode plugin, rpcd 2026.07.19+)
+#   files/usr/share/rpcd/ucode/luci.picoclaw.uc   (rpcd ucode plugin)
 #   files/usr/share/rpcd/acl.d/40-picoclaw.json
 
 name: Build IPK
@@ -44,6 +44,46 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Validate sources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "===== shell syntax ====="
+          for f in files/etc/init.d/picoclaw-webui files/opt/picoclaw/picoclaw-launcher; do
+            sh -n "$f"
+            echo "[OK] $f"
+          done
+
+          echo
+          echo "===== lua syntax ====="
+          LUAC="$(command -v luac5.1 || command -v luac5.3 || command -v luac || true)"
+          if [ -n "$LUAC" ]; then
+            while IFS= read -r f; do
+              "$LUAC" -p "$f"
+              echo "[OK] $f"
+            done < <(find files -name '*.lua' | sort)
+          else
+            echo "::warning::no luac available, skipping Lua syntax check"
+          fi
+
+          echo
+          echo "===== ucode plugin sanity ====="
+          # rpcd runs whatever ucode version the platform ships.  The
+          # constructs below are NOT valid ucode (there is no `typeof`
+          # operator and for-in loops need `let`) and silently keep the
+          # plugin from being registered - see git history.
+          UC="files/usr/share/rpcd/ucode/luci.picoclaw.uc"
+          if grep -nE 'typeof[[:space:]]' "$UC"; then
+            echo "::error::$UC uses the non-existent ucode 'typeof' operator (use type())"
+            exit 1
+          fi
+          if grep -nE 'for[[:space:]]*\([[:space:]]*const[[:space:]]' "$UC"; then
+            echo "::error::$UC uses 'for (const ...)' which ucode rejects (use let)"
+            exit 1
+          fi
+          echo "[OK] $UC"
+
       - name: Build architecture-independent IPK
         shell: bash
         run: |
@@ -51,7 +91,7 @@ jobs:
 
           PKG="luci-app-picoclaw"
           VERSION="1.0.0"
-          RELEASE="1"
+          RELEASE="2"
 
           WORK="$RUNNER_TEMP/ipk"
           OUT="$GITHUB_WORKSPACE/dist"
@@ -87,11 +127,11 @@ jobs:
             "etc/config/picoclaw"
             "etc/init.d/picoclaw-webui"
             "opt/picoclaw/picoclaw-launcher"
+            "usr/lib/lua/luci/picoclaw.lua"
             "usr/lib/lua/luci/controller/picoclaw.lua"
             "usr/lib/lua/luci/model/cbi/picoclaw_config.lua"
             "usr/lib/lua/luci/view/picoclaw/status.htm"
             "usr/lib/lua/luci/view/picoclaw/logs.htm"
-            "usr/lib/rpcd/luci.picoclaw"
             "usr/share/rpcd/ucode/luci.picoclaw.uc"
             "usr/share/rpcd/acl.d/40-picoclaw.json"
           )
@@ -148,13 +188,12 @@ jobs:
           Category: LuCI
           Priority: optional
           License: Apache-2.0
-          Depends: luci-base, rpcd, cgi-io
+          Depends: luci-base, luci-lua-runtime, luci-compat, rpcd, rpcd-mod-ucode
           Description: LuCI web interface for picoclaw-webui
            Live status, start / stop / restart, autostart toggle and a logs
            viewer for the picoclaw launcher at /opt/picoclaw/picoclaw-launcher
-           (default port 18800). All actions go through the ACL-restricted
-           rpcd object luci.picoclaw; no arbitrary command execution is
-           exposed.
+           (default port 18800). All actions are validated against a literal
+           whitelist; no arbitrary command execution is exposed.
           EOF
 
           # Remove indentation introduced by the heredoc.
@@ -164,6 +203,39 @@ jobs:
           printf '%s\n' \
             '/etc/config/picoclaw' \
             > "$WORK/control/conffiles"
+
+          # ------------------------------------------------------------
+          # Maintainer scripts
+          #
+          # opkg only runs a postinst when the IPK ships one; without it the
+          # freshly installed rpcd ucode plugin is not loaded and the LuCI
+          # menu stays cached, so the Status page would keep reporting an
+          # unregistered `luci.picoclaw` object until the next reboot.
+          # Mirrors the Makefile's postinst and luci.mk's default postinst.
+          # ------------------------------------------------------------
+
+          cat > "$WORK/control/postinst" <<'EOF'
+          #!/bin/sh
+          [ -n "${IPKG_INSTROOT}" ] || {
+              rm -f /tmp/luci-indexcache.*
+              rm -rf /tmp/luci-modulecache/
+              /etc/init.d/rpcd reload >/dev/null 2>&1
+          }
+          exit 0
+          EOF
+          sed -i 's/^[[:space:]]*//' "$WORK/control/postinst"
+          chmod 0755 "$WORK/control/postinst"
+
+          cat > "$WORK/control/prerm" <<'EOF'
+          #!/bin/sh
+          [ -n "${IPKG_INSTROOT}" ] || {
+              /etc/init.d/picoclaw-webui stop >/dev/null 2>&1
+              /etc/init.d/picoclaw-webui disable >/dev/null 2>&1
+          }
+          exit 0
+          EOF
+          sed -i 's/^[[:space:]]*//' "$WORK/control/prerm"
+          chmod 0755 "$WORK/control/prerm"
 
           # ------------------------------------------------------------
           # Calculate installed size
@@ -380,7 +452,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-picoclaw-all-ipk
-          path: dist/luci-app-picoclaw_1.0.0-1_all.ipk
+          path: dist/luci-app-picoclaw_1.0.0-2_all.ipk
           if-no-files-found: error
           retention-days: 30
 

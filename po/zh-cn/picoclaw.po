@@ -19,6 +19,12 @@ msgstr "日志"
 msgid "Open WebUI"
 msgstr "打开 WebUI"
 
+msgid "Actions"
+msgstr "操作"
+
+msgid "Log viewer"
+msgstr "日志查看器"
+
 msgid "Service control"
 msgstr "服务控制"
 
@@ -132,6 +138,42 @@ msgstr "状态不可用"
 
 msgid "Logs unavailable"
 msgstr "日志不可用"
+
+msgid "WebUI configuration for picoclaw. Changes are applied immediately and the daemon is restarted; do not edit this section during a long-running operation unless you have first set autostart off."
+msgstr "picoclaw WebUI 配置。修改会立即生效并重启守护进程；除非已先关闭开机自启，否则请勿在服务长时间运行期间编辑本节。"
+
+msgid "Start the picoclaw-webui service at boot. When you save this page the service is restarted automatically."
+msgstr "开机时启动 picoclaw-webui 服务。保存本页后服务会自动重启。"
+
+msgid "TCP port the launcher binds. Must be 1..65535."
+msgstr "启动器监听的 TCP 端口，范围为 1..65535。"
+
+msgid "picoclaw-webui.log (default)"
+msgstr "picoclaw-webui.log（默认）"
+
+msgid "Where to read logs from when the user opens the Logs tab. Setting this to `syslog` mixes picoclaw output with other system logs."
+msgstr "打开“日志”页面时读取日志的位置。设为 `syslog` 会将 picoclaw 输出与其他系统日志混在一起。"
+
+msgid "Forwarded to the launcher as PICOCLAW_VERBOSITY (0..3)."
+msgstr "以 PICOCLAW_VERBOSITY 环境变量传给启动器（0..3）。"
+
+msgid "Backend"
+msgstr "后端"
+
+msgid "rpcd (luci.picoclaw)"
+msgstr "rpcd (luci.picoclaw)"
+
+msgid "in-process fallback"
+msgstr "进程内回退"
+
+msgid "The rpcd object luci.picoclaw is unavailable, using the in-process backend instead"
+msgstr "rpcd 对象 luci.picoclaw 不可用，改用进程内后端"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Stopped"
+msgstr "已停止"
 
 msgid "running"
 msgstr "运行中"

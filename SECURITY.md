@@ -13,11 +13,12 @@ In particular:
 
 * The package does NOT introduce any user-supplied shell-execution
   endpoint.
-* All actions are routed through a single ubus object
-  (`luci.picoclaw`) whose method list is fixed and ACL-restricted.
-* The controller exposes only well-named JSON endpoints, each of
-  which forwards to a single named ubus method with whitelisted
-  arguments.
+* Every mutating operation maps a literal whitelist onto a fixed
+  `/etc/init.d/picoclaw-webui <verb>` invocation or onto a bounded UCI
+  write.
+* The same primitives are available through the ACL-restricted ubus
+  object `luci.picoclaw`, so non-LuCI frontends can be delegated
+  access without giving them shell access.
 
 ## Trust boundary
 
@@ -29,26 +30,29 @@ In particular:
                          v
         +----------------------------------+
         | controller/picoclaw.lua (HTTP)   |
-        | - validates method/action name   |
+        | - validates action name          |
         | - serialises JSON                |
         +----------------------------------+
-                         |
-                         v (ubus over unix socket)
-        +----------------------------------+
-        | /usr/share/rpcd/acl.d/40-picoclaw.json
-        | allow-list of object+method      |
-        +----------------------------------+
-                         |
-                         v
-        +----------------------------------+
-        | rpcd plugin /usr/lib/rpcd/luci.picoclaw
-        | - whitelist of strings           |
-        | - no shell concatenation         |
-        +----------------------------------+
-                         |
-                         v (only this subprocess)
-                /etc/init.d/picoclaw-webui <action>
-                  action in {start,stop,restart,enable,disable}
+                 |                    |
+   ubus available|                    | ubus unavailable
+                 v                    v
+ +----------------------------+  +-----------------------------+
+ | /usr/share/rpcd/acl.d/     |  | luci/picoclaw.lua           |
+ | 40-picoclaw.json allowlist |  | (in-process, root, same     |
+ |        |                   |  |  whitelists)                |
+ |        v                   |  +-----------------------------+
+ | rpcd ucode plugin          |             |
+ | /usr/share/rpcd/ucode/     |             |
+ | luci.picoclaw.uc           |             |
+ | - whitelist of strings     |             |
+ | - no shell concatenation   |             |
+ +----------------------------+             |
+                 |                         |
+                 +------------+------------+
+                              |
+                              v (the only subprocess ever spawned)
+                 /etc/init.d/picoclaw-webui <verb>
+                   verb in {start,stop,restart,enable,disable}
 ```
 
 ## Hardening points
@@ -57,7 +61,7 @@ In particular:
 
 `/usr/share/rpcd/acl.d/40-picoclaw.json` is the only thing that grants
 non-root users access to the ubus object. The file is shipped read-only
-by the package; if it is removed or renamed the page degrades to
+by the package; if it is removed or renamed the ubus object degrades to
 `permission denied` for non-admin users and continues to work for root.
 
 The file declares:
@@ -66,45 +70,64 @@ The file declares:
 * `write`: `get_status`, `get_logs`, `set_action`, `set_config`
   (admin only)
 
-There is no `*` wildcard in either scope. rpcd applies the ACL to every
-ubus call regardless of the caller; the controller is therefore only a
-convenience layer, not a security layer.
+There is no `*` wildcard in either scope, and the ACL is only relevant
+for callers that go through rpcd with a session; local root callers
+(e.g. the LuCI controller) are inside the same trust domain.
 
 ### 2. Controller JSON endpoints
 
 * Only literal strings are matched against whitelists (`ALLOWED_ACTIONS`,
-  `ALLOWED_RPC_METHODS`, `ALLOWED_CONFIG_FIELDS`). Anything else returns
-  HTTP 400 without invoking ubus.
-* The action whitelist is duplicated in the rpcd plugin, so even if the
-  controller were modified to forward an arbitrary string, the rpcd
-  plugin would still refuse it.
+  `ALLOWED_CONFIG_FIELDS`). Anything else returns HTTP 400 without
+  touching the backend.
+* The action whitelist exists in all three places (controller, in-process
+  backend, ucode plugin), so modifying one of them to forward an
+  arbitrary string is not enough to execute it.
 * `host` extraction from the `Host` header is restricted to
   `%w%.%-` characters before being used to construct a redirect URL.
   The fallback is `127.0.0.1`.
+* The in-process fallback runs in the LuCI/uhttpd process, i.e. in the
+  same trust domain as the controller itself. It exists so that the page
+  keeps working when rpcd is not reloaded or the ucode plugin is
+  unavailable; it does not widen the set of operations (same whitelist,
+  same fixed init script path).
 
-### 3. rpcd plugin
+### 3. Backends (ucode plugin and Lua module)
 
-* No `loadstring`, no `dofile`, no `nixio.fs.execve`.
-* `set_action` only ever runs `/etc/init.d/picoclaw-webui <action>`
-  with `action` drawn from a Lua table literal.
-* `set_config` writes only to `/config/picoclaw`, only fields in the
-  `ALLOWED_CONFIG_FIELDS` table, and each value passes a per-field
-  predicate (port 1..65535, log path from a fixed set, etc.).
-* `get_logs` selects its read path from a fixed literal set; UCI
-  cannot coerce an arbitrary file to be read.
+Both implementations of `luci.picoclaw` (the ucode rpcd plugin and
+`/usr/lib/lua/luci/picoclaw.lua`) share the same rules:
+
+* No dynamic code loading, no `eval`, no user-controlled command string.
+* `set_action` only ever runs `/etc/init.d/picoclaw-webui <action>` with
+  `action` drawn from a literal whitelist
+  (`start`, `stop`, `restart`, `enable`, `disable`).
+* `set_config` writes only to section `picoclaw.webui`, only fields with
+  a validator (`enabled`, `port`, `log_alt`, `verbosity`), and each value
+  must pass that validator (port 1..65535, log path from a fixed set,
+  ...). `log_alt` can never select an arbitrary file to read.
+* `get_logs` reads from one of two compile-time constant paths
+  (`/var/log/picoclaw-webui.log`, `/var/log/messages`).
+* All filesystem paths are constants; nothing user supplied is opened.
 
 ### 4. Init script
 
-* Refuses any argument outside the canonical procd verb set:
-  `{start, stop, restart, reload, kill, status, running, enabled}`.
-* Reads UCI values through `uci_get`, which only queries the known
-  config section.
+* Action validation is delegated to rc.common, which only dispatches
+  verbs it knows about (`start`, `stop`, `restart`, `reload`, `enable`,
+  `disable`, `enabled`, `running`, `status`, `info`, `trace`, `boot`,
+  `shutdown`); anything else prints the help text and does nothing.
+  (A hand-rolled `case "$1"` in the init script cannot work: rc.common
+  consumes the action argument before sourcing the script.)
+* Reads UCI values through `uci_get`, which only queries the known config
+  section.
+* `enable` / `disable` only touch `/etc/rc.d/S99picoclaw-webui` and the
+  `picoclaw.webui.enabled` flag.
 
 ### 5. Template / JS
 
 * All `script` blocks are `//<![CDATA[...]]>` and contain only DOM
   glue; no `eval`, no `new Function`, no string-built URLs from form
   values without prior validation.
+* Server-provided strings are written through `textContent` (or escaped
+  explicitly in the log viewer), never through `innerHTML`.
 
 ## Things this package does NOT protect against
 
