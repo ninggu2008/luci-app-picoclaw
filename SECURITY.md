@@ -118,6 +118,12 @@ Both implementations of `luci.picoclaw` (the ucode rpcd plugin and
   consumes the action argument before sourcing the script.)
 * Reads UCI values through `uci_get`, which only queries the known config
   section.
+* The procd instance command is the fixed literal
+  `/bin/sh -c 'echo $$ > /var/run/picoclaw-webui.pid; exec /opt/picoclaw/picoclaw-launcher'`.
+  It is written by the init script itself (procd only learned the `pidfile`
+  parameter after the 24.10.x releases); no UCI value is ever interpolated
+  into it - the port and verbosity reach the launcher through `PICOCLAW_*`
+  environment variables.
 * `enable` / `disable` only touch `/etc/rc.d/S99picoclaw-webui` and the
   `picoclaw.webui.enabled` flag.
 

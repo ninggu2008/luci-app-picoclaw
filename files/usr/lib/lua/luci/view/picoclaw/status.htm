@@ -150,6 +150,9 @@
         $("ps-state").innerHTML = state.running
             ? '<span class="badge badge-success">' + STR.running + '</span>'
             : '<span class="badge badge-error">' + STR.stopped + '</span>';
+        // How the state was determined (pidfile / proc / port / none) - handy
+        // when a custom launcher does not behave like the shipped one.
+        $("ps-state").title = d.state_source ? ("state source: " + d.state_source) : "";
         $("ps-pid").textContent     = (d.pid != null) ? String(d.pid) : "—";
         $("ps-port").textContent    = (d.port != null) ? String(d.port) : "—";
         $("ps-autostart").innerHTML = state.autostart

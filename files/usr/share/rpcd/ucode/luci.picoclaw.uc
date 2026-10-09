@@ -120,10 +120,20 @@ function get_log_path() {
 	return (read_opt('log_alt', '') == 'syslog') ? SYSLOG : LOG_PATH;
 }
 
-/* procd writes the instance pid into the pidfile configured by the init
- * script and unlinks it again when the instance goes away, so this is a
- * cheap, ubus-free liveness probe. */
-function read_pid() {
+/* Service state detection.
+ *
+ * The `pidfile` procd instance parameter only exists after the 24.10.x
+ * releases (added 2026-03), so a pidfile written by procd cannot be relied
+ * on.  The init script writes the pid itself (it exec()s the launcher
+ * through a small shell wrapper) and three independent signals are combined
+ * here so the Status page reports the real state even when the service was
+ * started by hand:
+ *
+ *   1. the pidfile (validated against /proc),
+ *   2. a /proc scan for a process whose command line mentions the launcher,
+ *   3. the configured TCP port being in LISTEN state.
+ */
+function pidfile_pid() {
 	try {
 		const data = readfile(PIDFILE);
 		const pid = data ? +trim(data) : NaN;
@@ -134,6 +144,75 @@ function read_pid() {
 	catch (e) { }
 
 	return null;
+}
+
+function proc_scan_pid() {
+	try {
+		const entries = lsdir('/proc');
+
+		for (let i = 0; i < length(entries); i++) {
+			const pid = +entries[i];
+
+			if (!(pid > 0))
+				continue;
+
+			try {
+				const cmd = readfile('/proc/' + pid + '/cmdline');
+
+				if (cmd && index(cmd, LAUNCHER) >= 0)
+					return int(pid);
+			}
+			catch (e) { }
+		}
+	}
+	catch (e) { }
+
+	return null;
+}
+
+/* Look for a listening socket on `port` in /proc/net/tcp{,6} (state 0A). */
+function port_listening(port) {
+	const want = sprintf('%04X', port);
+	const paths = [ '/proc/net/tcp', '/proc/net/tcp6' ];
+
+	for (let i = 0; i < length(paths); i++) {
+		try {
+			const data = readfile(paths[i]);
+
+			if (!data)
+				continue;
+
+			const lines = split(data, '\n');
+
+			for (let j = 0; j < length(lines); j++) {
+				const m = match(lines[j],
+					/^[ \t]*[0-9]+:[ \t]*[0-9A-Fa-f]+:([0-9A-Fa-f]+)[ \t]+[^ \t]+[ \t]+([0-9A-Fa-f]+)/);
+
+				if (m && m[2] == '0A' && uc(m[1]) == want)
+					return true;
+			}
+		}
+		catch (e) { }
+	}
+
+	return false;
+}
+
+function service_state(port) {
+	let pid = pidfile_pid();
+
+	if (pid != null)
+		return { running: true, pid: pid, source: 'pidfile' };
+
+	pid = proc_scan_pid();
+
+	if (pid != null)
+		return { running: true, pid: pid, source: 'proc' };
+
+	if (port_listening(port))
+		return { running: true, pid: null, source: 'port' };
+
+	return { running: false, pid: null, source: 'none' };
 }
 
 /* Autostart == the /etc/rc.d/S* symlink created by `/etc/init.d/... enable`. */
@@ -265,20 +344,22 @@ function read_log_tail(path, max_lines) {
 const methods = {
 	get_status: {
 		call: function() {
-			const pid = read_pid();
+			const port  = get_port();
+			const state = service_state(port);
 
 			const out = {
-				running:   (pid != null),
-				pid:       pid,
-				port:      get_port(),
-				autostart: autostart_enabled(),
-				service:   SERVICE,
-				launcher:  LAUNCHER,
-				log_path:  get_log_path(),
+				running:      state.running,
+				pid:          state.pid,
+				port:         port,
+				autostart:    autostart_enabled(),
+				service:      SERVICE,
+				launcher:     LAUNCHER,
+				log_path:     get_log_path(),
+				state_source: state.source,
 			};
 
-			if (pid != null) {
-				const up = process_uptime(pid);
+			if (state.pid != null) {
+				const up = process_uptime(state.pid);
 
 				if (up != null)
 					out.uptime_s = up;

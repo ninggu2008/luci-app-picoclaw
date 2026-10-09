@@ -21,11 +21,15 @@ local _ = i18n.translate or i18n.gettext or function(s) return s end
 local INIT = "/etc/init.d/picoclaw-webui"
 
 local m = Map("picoclaw", _("picoclaw"),
-    _("WebUI configuration for picoclaw. Changes are applied immediately "
-    .. "and the daemon is restarted; do not edit this section during a "
+    _("WebUI configuration for picoclaw. Saving this page (Save & Apply) "
+    .. "restarts the service; do not edit this section during a "
     .. "long-running operation unless you have first set autostart off."))
 
-m.pageaction = false
+-- NOTE: do *not* set `m.pageaction = false` here.  luci-compat's
+-- cbi/footer.htm only emits the Save / Save & Apply / Reset buttons when
+-- pageaction is true (the dispatcher defaults it to true), so clearing it
+-- leaves the Configuration page without any way to apply changes.
+
 m:chain("luci")
 
 -- ---------------------------------------------------------------------------

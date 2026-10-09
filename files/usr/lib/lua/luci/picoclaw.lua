@@ -115,10 +115,26 @@ local function get_log_path()
 	return LOG_PATH
 end
 
--- procd writes the instance pid into the pidfile configured by the init
--- script and removes it again when the instance is gone, so this is a
--- cheap, ubus free liveness probe.
-local function read_pid()
+-- ---------------------------------------------------------------------------
+-- service state detection
+--
+-- The `pidfile` procd instance parameter only exists after the 24.10.x
+-- releases (added 2026-03), so a pidfile written by procd cannot be relied
+-- on.  The init script therefore writes the pid itself (it exec()s the
+-- launcher through a tiny shell wrapper), and three independent signals are
+-- combined here so that the Status page reports the true state even when
+-- the service was started by hand:
+--
+--   1. the pidfile (validated against /proc),
+--   2. a /proc scan for a process whose command line mentions the launcher,
+--   3. the configured TCP port being in LISTEN state.
+-- ---------------------------------------------------------------------------
+
+local function proc_alive(pid)
+	return fs.stat("/proc/" .. pid) ~= nil
+end
+
+local function pidfile_pid()
 	local data = fs.readfile(PIDFILE)
 
 	if not data then
@@ -127,11 +143,76 @@ local function read_pid()
 
 	local pid = tonumber(data:match("^%s*(%d+)"))
 
-	if pid and pid > 0 and fs.stat("/proc/" .. pid) then
+	if pid and pid > 0 and proc_alive(pid) then
 		return pid
 	end
 
 	return nil
+end
+
+local function proc_scan_pid()
+	for path in fs.glob("/proc/[0-9]*") do
+		local pid = tonumber(path:match("/(%d+)$"))
+
+		if pid then
+			local f = io.open("/proc/" .. pid .. "/cmdline", "rb")
+
+			if f then
+				local cmd = f:read(256) or ""
+				f:close()
+
+				if cmd:find(LAUNCHER, 1, true) then
+					return pid
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+-- Look for a listening socket on `port` in /proc/net/tcp{,6} (state 0A).
+local function port_listening(port)
+	local want = string.format("%04X", port)
+
+	for _, path in ipairs({ "/proc/net/tcp", "/proc/net/tcp6" }) do
+		local f = io.open(path, "r")
+
+		if f then
+			for line in f:lines() do
+				local lport, state = line:match("^%s*%d+:%s*[0-9A-Fa-f]+:(%x+)%s+%S+%s+(%x+)")
+
+				if lport and state == "0A" and lport:upper() == want then
+					f:close()
+					return true
+				end
+			end
+
+			f:close()
+		end
+	end
+
+	return false
+end
+
+local function service_state(port)
+	local pid = pidfile_pid()
+
+	if pid then
+		return { running = true, pid = pid, source = "pidfile" }
+	end
+
+	pid = proc_scan_pid()
+
+	if pid then
+		return { running = true, pid = pid, source = "proc" }
+	end
+
+	if port_listening(port) then
+		return { running = true, pid = nil, source = "port" }
+	end
+
+	return { running = false, pid = nil, source = "none" }
 end
 
 -- Autostart == the /etc/rc.d/S* symlink created by
@@ -261,20 +342,22 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.get_status()
-	local pid = read_pid()
+	local port = get_port()
+	local state = service_state(port)
 
 	local out = {
-		running   = (pid ~= nil),
-		pid       = pid,
-		port      = get_port(),
-		autostart = autostart_enabled(),
-		service   = SERVICE,
-		launcher  = LAUNCHER,
-		log_path  = get_log_path(),
+		running      = state.running,
+		pid          = state.pid,
+		port         = port,
+		autostart    = autostart_enabled(),
+		service      = SERVICE,
+		launcher     = LAUNCHER,
+		log_path     = get_log_path(),
+		state_source = state.source,
 	}
 
-	if pid then
-		local up = process_uptime(pid)
+	if state.pid then
+		local up = process_uptime(state.pid)
 
 		if up then
 			out.uptime_s = up

@@ -139,8 +139,8 @@ msgstr "状态不可用"
 msgid "Logs unavailable"
 msgstr "日志不可用"
 
-msgid "WebUI configuration for picoclaw. Changes are applied immediately and the daemon is restarted; do not edit this section during a long-running operation unless you have first set autostart off."
-msgstr "picoclaw WebUI 配置。修改会立即生效并重启守护进程；除非已先关闭开机自启，否则请勿在服务长时间运行期间编辑本节。"
+msgid "WebUI configuration for picoclaw. Saving this page (Save & Apply) restarts the service; do not edit this section during a long-running operation unless you have first set autostart off."
+msgstr "picoclaw WebUI 配置。点击“保存并应用”后服务会重启；除非已先关闭开机自启，否则请勿在服务长时间运行期间编辑本节。"
 
 msgid "Start the picoclaw-webui service at boot. When you save this page the service is restarted automatically."
 msgstr "开机时启动 picoclaw-webui 服务。保存本页后服务会自动重启。"

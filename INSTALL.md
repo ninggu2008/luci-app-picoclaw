@@ -137,6 +137,28 @@ is kept in sync with the `/etc/rc.d/S99picoclaw-webui` symlink by
 `enable` / `disable`. `start`, `stop` and `restart` always work, no matter
 what the flag says.
 
+#### How "running" is detected
+
+procd only gained the `pidfile` instance parameter *after* the 24.10.x
+releases (it landed in 2026-03), so the init script writes the pidfile
+itself: the instance command is
+`/bin/sh -c 'echo $$ > /var/run/picoclaw-webui.pid; exec /opt/picoclaw/picoclaw-launcher'`
+and `exec` keeps the pid valid.
+
+The Status page combines three signals, in this order, and reports which
+one matched in `state_source` (hover the State badge):
+
+| `state_source` | Signal |
+| -------------- | ------ |
+| `pidfile` | `/var/run/picoclaw-webui.pid` exists and `/proc/<pid>` is alive |
+| `proc` | a process whose `/proc/<pid>/cmdline` mentions `/opt/picoclaw/picoclaw-launcher` |
+| `port` | the configured TCP port is in LISTEN state in `/proc/net/tcp{,6}` |
+| `none` | none of the above → reported as stopped |
+
+This means the page also reports the correct state when the launcher was
+started by hand (not through `/etc/init.d/`), or when it replaced itself
+with another binary (the shipped placeholder `exec`s `uhttpd`).
+
 ### 3.4 LuCI
 
 1. Log in to LuCI as root.
@@ -164,6 +186,22 @@ lua -e 'require("luci.picoclaw"); local s=require("luci.picoclaw").get_status();
 If (3) works but (1) does not, the page will still display correct data
 (the controller falls back automatically); fix the plugin by reloading
 rpcd. If (3) fails too, the Lua runtime dependencies from 2.3 are missing.
+
+Symptom: the Status tab says `stopped` while the launcher is running.
+Check the `state_source` shown when hovering the State badge, then:
+
+```sh
+cat /var/run/picoclaw-webui.pid      # written by the init script wrapper
+ps w | grep -F /opt/picoclaw/picoclaw-launcher
+netstat -ltn | grep 18800            # or: ss -ltn
+```
+
+If the pidfile is missing because the service was started by hand, that is
+expected - the `/proc` scan or the port check should still report
+`running`. If all three signals fail, the launcher neither keeps its
+pid, nor shows the launcher path in its command line, nor listens on the
+configured port; in that case check `/var/log/picoclaw-webui.log` and the
+`PICOCLAW_*` environment variables from section 5.
 
 ## 4. Uninstall
 

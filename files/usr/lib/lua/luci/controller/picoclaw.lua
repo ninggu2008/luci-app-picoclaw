@@ -64,7 +64,10 @@ function index()
 
     entry(
         {"admin", "services", "picoclaw", "config"},
-        cbi("picoclaw_config", {autoapply = true}),
+        -- No `autoapply`: with it, luci-compat's cbi/footer.htm suppresses
+        -- the "Save & Apply" button.  The explicit two-step flow also lets
+        -- the user review the values before the service is restarted.
+        cbi("picoclaw_config"),
         _("Configuration"),
         20
     ).acl = true

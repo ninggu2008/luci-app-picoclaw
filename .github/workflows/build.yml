@@ -91,7 +91,7 @@ jobs:
 
           PKG="luci-app-picoclaw"
           VERSION="1.0.0"
-          RELEASE="2"
+          RELEASE="3"
 
           WORK="$RUNNER_TEMP/ipk"
           OUT="$GITHUB_WORKSPACE/dist"
@@ -452,7 +452,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-picoclaw-all-ipk
-          path: dist/luci-app-picoclaw_1.0.0-2_all.ipk
+          path: dist/luci-app-picoclaw_1.0.0-3_all.ipk
           if-no-files-found: error
           retention-days: 30
 

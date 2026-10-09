@@ -30,9 +30,10 @@ STOP=10
 NAME=picoclaw-webui
 PROG=/opt/picoclaw/picoclaw-launcher
 
-# State shared with the procd respawn loop. procd writes the pid here while
-# the instance is alive and removes the file when it goes away; the rpcd
-# plugin and the LuCI backend use it as a cheap liveness probe.
+# Liveness state. The pid is written by the instance wrapper below (procd
+# only gained the `pidfile` parameter after the 24.10.x releases) and the
+# Status page uses it - together with a /proc scan and a check on the
+# configured port - to decide whether the service is running.
 PIDFILE=/var/run/picoclaw-webui.pid
 LOGFILE=/var/log/picoclaw-webui.log
 
@@ -109,7 +110,12 @@ start_service() {
     ensure_logfile
 
     procd_open_instance
-    procd_set_param command "$PROG"
+
+    # procd only learned the `pidfile` instance parameter after the 24.10.x
+    # releases (2026-03), so write the pidfile ourselves: the shell writes
+    # its own $$ and then exec()s the launcher, keeping the pid valid.  The
+    # Status page uses this file as one of its liveness signals.
+    procd_set_param command /bin/sh -c "echo \$\$ > \"$PIDFILE\"; exec \"$PROG\""
     procd_set_param env \
         PICOCLAW_PORT="$port" \
         PICOCLAW_VERBOSITY="$verbosity" \
@@ -122,6 +128,9 @@ start_service() {
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1
+
+    # Harmless and future proof: on procd releases that support the
+    # parameter it writes the very same pid as the wrapper above.
     procd_set_param pidfile "$PIDFILE"
 
     procd_close_instance
