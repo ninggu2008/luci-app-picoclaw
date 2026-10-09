@@ -17,7 +17,8 @@
 #   files/usr/lib/lua/luci/model/cbi/picoclaw_config.lua
 #   files/usr/lib/lua/luci/view/picoclaw/status.htm
 #   files/usr/lib/lua/luci/view/picoclaw/logs.htm
-#   files/usr/lib/rpcd/luci.picoclaw
+#   files/usr/lib/rpcd/luci.picoclaw              (legacy Lua plugin, <= rpcd 2026.07.19)
+#   files/usr/share/rpcd/luci.picoclaw.uc         (ucode plugin, rpcd 2026.07.19+)
 #   files/usr/share/rpcd/acl.d/40-picoclaw.json
 
 name: Build IPK
@@ -91,6 +92,7 @@ jobs:
             "usr/lib/lua/luci/view/picoclaw/status.htm"
             "usr/lib/lua/luci/view/picoclaw/logs.htm"
             "usr/lib/rpcd/luci.picoclaw"
+            "usr/share/rpcd/luci.picoclaw.uc"
             "usr/share/rpcd/acl.d/40-picoclaw.json"
           )
 
