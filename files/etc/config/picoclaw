@@ -1,0 +1,6 @@
+config webui 'webui'
+    option enabled '0'
+    option port '18800'
+    option verbosity '1'
+    # log_alt: '', '/var/log/picoclaw-webui.log' or 'syslog'
+    option log_alt ''

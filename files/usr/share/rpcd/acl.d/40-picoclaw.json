@@ -1,0 +1,17 @@
+{
+    "luci-picoclaw": {
+        "description": "Grant LuCI access to picoclaw management endpoints",
+        "read": {
+            "ubus": {
+                "luci.picoclaw": [ "get_status", "get_logs" ]
+            },
+            "uci": [ "picoclaw" ]
+        },
+        "write": {
+            "ubus": {
+                "luci.picoclaw": [ "get_status", "get_logs", "set_action", "set_config" ]
+            },
+            "uci": [ "picoclaw" ]
+        }
+    }
+}

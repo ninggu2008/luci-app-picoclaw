@@ -1,0 +1,25 @@
+# OpenWrt build artefacts (if you ever drop this in a buildroot)
+bin/
+build_dir/
+*.ipk
+*.tar.gz
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Translation build output
+*.mo
+po/*/luci-app-picoclaw.*.po
+
+# Local signing material (don't ever commit these!)
+*.key
+*.pem
+secrets/

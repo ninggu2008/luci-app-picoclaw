@@ -1,0 +1,146 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh-CN\n"
+"Project-Name: luci-app-picoclaw\n"
+
+msgid "picoclaw"
+msgstr "picoclaw"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Configuration"
+msgstr "配置"
+
+msgid "Logs"
+msgstr "日志"
+
+msgid "Open WebUI"
+msgstr "打开 WebUI"
+
+msgid "Service control"
+msgstr "服务控制"
+
+msgid "Start"
+msgstr "启动"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Restart"
+msgstr "重启"
+
+msgid "Enable at boot"
+msgstr "开机自启"
+
+msgid "Disable at boot"
+msgstr "禁用自启"
+
+msgid "Service"
+msgstr "服务"
+
+msgid "State"
+msgstr "状态"
+
+msgid "PID"
+msgstr "PID"
+
+msgid "Port"
+msgstr "端口"
+
+msgid "Listen port"
+msgstr "监听端口"
+
+msgid "Autostart"
+msgstr "自启"
+
+msgid "Uptime"
+msgstr "运行时长"
+
+msgid "Launcher"
+msgstr "启动器"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Log path"
+msgstr "日志路径"
+
+msgid "Log destination"
+msgstr "日志来源"
+
+msgid "Lines to show"
+msgstr "显示行数"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Auto-refresh"
+msgstr "自动刷新"
+
+msgid "Output"
+msgstr "输出"
+
+msgid "Source"
+msgstr "来源"
+
+msgid "Enable"
+msgstr "启用"
+
+msgid "Verbosity"
+msgstr "详细级别"
+
+msgid "Quiet"
+msgstr "静默"
+
+msgid "Normal"
+msgstr "普通"
+
+msgid "Verbose"
+msgstr "详细"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "picoclaw-webui.log"
+msgstr "picoclaw-webui.log"
+
+msgid "Syslog"
+msgstr "系统日志"
+
+msgid "WebUI"
+msgstr "WebUI"
+
+msgid "loading…"
+msgstr "加载中…"
+
+msgid "no log lines yet"
+msgstr "暂无日志"
+
+msgid "Sending action: %s"
+msgstr "正在执行操作: %s"
+
+msgid "Action '%s' succeeded"
+msgstr "操作 '%s' 成功"
+
+msgid "Action failed"
+msgstr "操作失败"
+
+msgid "Status unavailable"
+msgstr "状态不可用"
+
+msgid "Logs unavailable"
+msgstr "日志不可用"
+
+msgid "running"
+msgstr "运行中"
+
+msgid "stopped"
+msgstr "已停止"
+
+msgid "enabled"
+msgstr "已启用"
+
+msgid "disabled"
+msgstr "已禁用"

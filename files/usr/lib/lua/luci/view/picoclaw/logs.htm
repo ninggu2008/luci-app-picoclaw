@@ -1,0 +1,133 @@
+<%#
+    picoclaw/logs - logs viewer.
+
+    Polls the rpcd `luci.picoclaw.get_logs` method on demand. The
+    "Clear" button is intentionally a no-op in this template; clearing
+    log files is a privileged operation and is intentionally omitted
+    from the UI.
+-%>
+
+<%+header%>
+
+<h2 name="content"><%:picoclaw%>: <%:Logs%></h2>
+
+<fieldset class="cbi-section">
+    <legend><%:Log viewer%></legend>
+    <p class="alert-message" id="pl-flash" style="display:none"></p>
+
+    <div class="cbi-value">
+        <label class="cbi-value-title"><%:Lines to show%></label>
+        <div class="cbi-value-field">
+            <select id="pl-lines">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+            </select>
+            <button class="btn cbi-button cbi-button-apply" id="pl-refresh">
+                <%:Refresh%></button>
+            <label>
+                <input type="checkbox" id="pl-tail" />
+                <%:Auto-refresh%>
+            </label>
+        </div>
+    </div>
+
+    <div class="cbi-value">
+        <label class="cbi-value-title"><%:Source%></label>
+        <div class="cbi-value-field">
+            <span id="pl-path"><em>—</em></span>
+        </div>
+    </div>
+
+    <div class="cbi-value">
+        <label class="cbi-value-title"><%:Output%></label>
+        <div class="cbi-value-field">
+            <pre id="pl-out" class="picoclaw-log">—</pre>
+        </div>
+    </div>
+</fieldset>
+
+<script type="text/javascript">//<![CDATA[
+(function () {
+    "use strict";
+
+    var LOGS_URL = "<%=url('admin/services/picoclaw/call/logs')%>";
+
+    function $(id) { return document.getElementById(id); }
+
+    function flash(msg, kind) {
+        var el = $("pl-flash");
+        if (!el) return;
+        el.className = "alert-message alert-" + (kind || "info");
+        el.textContent = msg;
+        el.style.display = "block";
+        setTimeout(function () { el.style.display = "none"; }, 4000);
+    }
+
+    function escape(s) {
+        return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    function render(data) {
+        if (!data || !data.ok) {
+            flash((data && data.error) || "<%:Logs unavailable%>", "warning");
+            return;
+        }
+        var d = data.data || { lines: [] };
+        $("pl-path").textContent = d.path + " (" + (d.total || 0) + " lines)";
+        var out = $("pl-out");
+        out.innerHTML = (d.lines && d.lines.length)
+            ? d.lines.map(escape).join("\n")
+            : "<%:no log lines yet%>";
+        out.scrollTop = out.scrollHeight;
+    }
+
+    function refresh() {
+        var lines = parseInt($("pl-lines").value, 10) || 200;
+        XHR.get(LOGS_URL, { lines: lines }, function (x, data) {
+            try {
+                if (typeof data === "string") data = JSON.parse(data);
+            } catch (e) { data = null; }
+            render(data);
+        });
+    }
+
+    var tailTimer = null;
+    function setTail(on) {
+        if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
+        if (on) tailTimer = setInterval(refresh, 3000);
+    }
+
+    $("pl-refresh").addEventListener("click", function (ev) {
+        ev.preventDefault(); refresh();
+    });
+    $("pl-tail").addEventListener("change", function () {
+        setTail(this.checked);
+    });
+    $("pl-lines").addEventListener("change", refresh);
+
+    refresh();
+})();
+//]]></script>
+
+<style type="text/css">
+    .picoclaw-log {
+        font-family: monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 60vh;
+        overflow-y: auto;
+        background: #1d1f21;
+        color: #c5c8c6;
+        padding: 0.6em 0.8em;
+        border-radius: 4px;
+    }
+</style>
+
+<%+footer%>

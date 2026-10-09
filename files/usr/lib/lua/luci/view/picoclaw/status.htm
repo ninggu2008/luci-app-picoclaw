@@ -1,0 +1,214 @@
+<%#
+    picoclaw/status - live status page.
+
+    Renders a card with the current state of picoclaw-webui and wires
+    them to the JSON-RPC endpoints registered by controller/picoclaw.lua.
+
+    This template contains NO client-side `eval`, NO direct `os.execute`,
+    and NO shell-out. Every button goes through the JSON endpoint, which
+    in turn calls the ACL-restricted rpcd object `luci.picoclaw`.
+-%>
+
+<%+header%>
+
+<h2 name="content"><%:picoclaw%></h2>
+
+<fieldset class="cbi-section">
+    <legend><%:Status%></legend>
+    <table class="table" id="picoclaw-status-table">
+        <tbody>
+            <tr><th><%:Service%></th>     <td id="ps-service"><em><%:loading…%></em></td></tr>
+            <tr><th><%:State%></th>       <td id="ps-state"><em><%:loading…%></em></td></tr>
+            <tr><th><%:PID%></th>         <td id="ps-pid"><em>—</em></td></tr>
+            <tr><th><%:Port%></th>        <td id="ps-port"><em>—</em></td></tr>
+            <tr><th><%:Autostart%></th>   <td id="ps-autostart"><em>—</em></td></tr>
+            <tr><th><%:Uptime%></th>      <td id="ps-uptime"><em>—</em></td></tr>
+            <tr><th><%:Launcher%></th>    <td id="ps-launcher"><em>—</em></td></tr>
+            <tr><th><%:Version%></th>     <td id="ps-version"><em>—</em></td></tr>
+            <tr><th><%:Log path%></th>    <td id="ps-log"><em>—</em></td></tr>
+        </tbody>
+    </table>
+</fieldset>
+
+<fieldset class="cbi-section">
+    <legend><%:Actions%></legend>
+    <p class="alert-message" id="ps-flash" style="display:none"></p>
+
+    <div class="cbi-value" id="ps-action-row">
+        <label class="cbi-value-title"><%:Service control%></label>
+        <div class="cbi-value-field">
+            <button class="btn cbi-button cbi-button-positive" id="ps-start"
+                    disabled><%:Start%></button>
+            <button class="btn cbi-button cbi-button-negative" id="ps-stop"
+                    disabled><%:Stop%></button>
+            <button class="btn cbi-button cbi-button-neutral"  id="ps-restart"
+                    disabled><%:Restart%></button>
+            <button class="btn cbi-button cbi-button-neutral"  id="ps-enable"
+                    disabled><%:Enable at boot%></button>
+            <button class="btn cbi-button cbi-button-neutral"  id="ps-disable"
+                    disabled><%:Disable at boot%></button>
+        </div>
+    </div>
+
+    <div class="cbi-value">
+        <label class="cbi-value-title"><%:WebUI%></label>
+        <div class="cbi-value-field">
+            <a class="btn cbi-button cbi-button-apply" id="ps-webui"
+               target="_blank" rel="noopener"><%:Open WebUI%></a>
+            <a class="btn cbi-button cbi-button-neutral"
+               href="<%=url('admin/services/picoclaw/config')%>"><%:Configuration%></a>
+            <a class="btn cbi-button cbi-button-neutral"
+               href="<%=url('admin/services/picoclaw/logs')%>"><%:Logs%></a>
+        </div>
+    </div>
+</fieldset>
+
+<script type="text/javascript">//<![CDATA[
+(function () {
+    "use strict";
+
+    // ---- translated strings (resolved server-side) ----
+    var STR = {
+        running:          "<%:Running%>",
+        stopped:          "<%:Stopped%>",
+        autostart_on:     "<%:enabled%>",
+        autostart_off:    "<%:disabled%>",
+        status_unavail:   "<%:Status unavailable%>",
+        action_failed:    "<%:Action failed%>",
+        action_ok:        "<%:Action '%s' succeeded%>",
+        action_sending:   "<%:Sending action: %s%>"
+    };
+    // Defensive escape for " vs HTML rendering: gettext strings here are
+    // plain ASCII; no special chars required.
+
+    var STATUS_URL = "<%=url('admin/services/picoclaw/call/status')%>";
+    var ACTION_URL = "<%=url('admin/services/picoclaw/call/action')%>";
+
+    var buttons = ["ps-start", "ps-stop", "ps-restart", "ps-enable", "ps-disable"];
+
+    function $(id) { return document.getElementById(id); }
+    function setButtonsEnabled(enabled) {
+        for (var i = 0; i < buttons.length; i++) {
+            var el = $(buttons[i]);
+            if (el) el.disabled = !enabled;
+        }
+    }
+    function flash(msg, kind) {
+        var el = $("ps-flash");
+        if (!el) return;
+        el.className = "alert-message alert-" + (kind || "info");
+        el.textContent = msg;
+        el.style.display = "block";
+        setTimeout(function () { el.style.display = "none"; }, 4000);
+    }
+    function fmtUptime(s) {
+        if (!s || s <= 0) return "—";
+        var d = Math.floor(s / 86400),
+            h = Math.floor((s % 86400) / 3600),
+            m = Math.floor((s % 3600) / 60),
+            ss = s % 60;
+        var parts = [];
+        if (d) parts.push(d + "d");
+        if (h) parts.push(h + "h");
+        if (m) parts.push(m + "m");
+        parts.push(ss + "s");
+        return parts.join(" ");
+    }
+    function render(data) {
+        if (!data) return;
+        var d = data.data || {};
+        $("ps-service").innerHTML  = "<strong>" + (d.service || "picoclaw-webui") + "</strong>";
+        $("ps-state").innerHTML = d.running
+            ? '<span class="badge badge-success">' + STR.running + '</span>'
+            : '<span class="badge badge-error">' + STR.stopped + '</span>';
+        $("ps-pid").textContent    = d.pid != null ? String(d.pid) : "—";
+        $("ps-port").textContent   = d.port != null ? String(d.port) : "—";
+        $("ps-autostart").innerHTML = d.autostart
+            ? '<span class="badge badge-info">' + STR.autostart_on + '</span>'
+            : '<span class="badge badge-neutral">' + STR.autostart_off + '</span>';
+        $("ps-uptime").textContent = fmtUptime(d.uptime_s);
+        $("ps-launcher").textContent = d.launcher || "—";
+        $("ps-version").textContent  = d.version  || "—";
+        $("ps-log").textContent      = d.log_path || "—";
+
+        var webui = $("ps-webui");
+        if (webui && d.port) {
+            var host = window.location.hostname;
+            webui.href = window.location.protocol + "//" + host + ":" + d.port + "/";
+            webui.disabled = false;
+        }
+
+        var started = !!d.running;
+        $("ps-start").disabled    = started;
+        $("ps-stop").disabled     = !started;
+        $("ps-restart").disabled  = false;
+        $("ps-enable").disabled   = !!d.autostart;
+        $("ps-disable").disabled  = !d.autostart;
+    }
+
+    function refresh() {
+        setButtonsEnabled(false);
+        XHR.get(STATUS_URL, null, function (x, data) {
+            try {
+                if (typeof data === "string") data = JSON.parse(data);
+            } catch (e) { data = null; }
+            if (data && data.ok) {
+                render(data);
+            } else {
+                flash((data && data.error) || STR.status_unavail, "warning");
+            }
+        }).always(function () {
+            setButtonsEnabled(true);
+        });
+    }
+
+    function sendAction(name) {
+        if (!name) return;
+        flash(STR.action_sending.replace("%s", name), "info");
+        XHR.post(ACTION_URL, { action: name }, function (x, data) {
+            try {
+                if (typeof data === "string") data = JSON.parse(data);
+            } catch (e) { data = null; }
+            if (data && data.ok && data.data && data.data.ok) {
+                flash(STR.action_ok.replace("%s", name), "success");
+            } else {
+                var msg = (data && data.error)
+                       || (data && data.data && data.data.message)
+                       || STR.action_failed;
+                flash(msg, "error");
+            }
+            refresh();
+        }).always(function () {
+            setButtonsEnabled(true);
+        });
+    }
+
+    function bind(name, handler) {
+        var el = $(name);
+        if (el) el.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            handler();
+        });
+    }
+
+    bind("ps-start",   function () { sendAction("start");   });
+    bind("ps-stop",    function () { sendAction("stop");    });
+    bind("ps-restart", function () { sendAction("restart"); });
+    bind("ps-enable",  function () { sendAction("enable");  });
+    bind("ps-disable", function () { sendAction("disable"); });
+
+    refresh();
+    var interval = setInterval(refresh, 5000);
+    document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+            clearInterval(interval);
+            interval = null;
+        } else if (!interval) {
+            refresh();
+            interval = setInterval(refresh, 5000);
+        }
+    });
+})();
+//]]></script>
+
+<%+footer%>

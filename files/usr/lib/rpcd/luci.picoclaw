@@ -1,0 +1,301 @@
+--[[
+    luci.picoclaw - rpcd plugin (loaded by rpcd as the ubus object
+    `luci.picoclaw`).
+
+    Methods exposed to authenticated administrators (gated by ACL
+    /usr/share/rpcd/acl.d/40-picoclaw.json):
+
+        get_status()             -> { running, pid, port, autostart, uptime_s,
+                                      version, launcher, log_path, service }
+        get_logs(lines=200)      -> { lines = { ... }, path, total }
+        set_action("start"|... ) -> { ok, action, message }
+        set_config({k=v,...})    -> { ok, changed }
+
+    SECURITY MODEL
+    --------------
+    1. rpcd already runs in the privilege scope appropriate for the ACL
+       (`write` methods require root / admin group).
+    2. Every method that touches the system validates it against a
+       *literal* whitelist before doing anything.
+    3. set_action never concatenates user input into a shell command; the
+       only subprocess invocation is `/etc/init.d/picoclaw-webui <action>`
+       where `<action>` is one of five constants we own.
+    4. set_config writes only to /config/picoclaw, fields bounded to
+       enumerated types and value ranges.
+    5. No `loadstring`, no `os.execute` of user data, no `nixio.fs.execve`
+       outside the fixed /etc/init.d/ path.
+--]]
+
+local M = {}
+
+local SERVICE          = "picoclaw-webui"
+local LAUNCHER         = "/opt/picoclaw/picoclaw-launcher"
+local LOG_PATH         = "/var/log/picoclaw-webui.log"
+local UCI_CFG          = "picoclaw"
+local UCI_SEC          = "webui"
+
+-- Hard-coded action whitelist. This is the only set of strings we ever
+-- pass through to a subprocess.
+local ALLOWED_ACTIONS = {
+    ["start"]   = true,
+    ["stop"]    = true,
+    ["restart"] = true,
+    ["enable"]  = true,
+    ["disable"] = true,
+}
+
+-- ---------------------------------------------------------------------------
+-- tiny utilities (no io.popen outside of the well-known init script)
+-- ---------------------------------------------------------------------------
+
+local function trim(s)
+    return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function file_exists(p)
+    if not p or p == "" then return false end
+    local f = io.open(p, "r")
+    if f then f:close(); return true end
+    return false
+end
+
+local function read_file(p)
+    if not file_exists(p) then return nil end
+    local f = io.open(p, "r")
+    if not f then return nil end
+    local data = f:read("*a")
+    f:close()
+    return data
+end
+
+local function invoke_initd(action)
+    if not ALLOWED_ACTIONS[action] then
+        return false, "refused: unknown action"
+    end
+    -- /etc/init.d/<name> <action> with `action` drawn from a literal table.
+    -- os.execute returns raw shell status; we treat non-zero as failure.
+    local cmd = "/etc/init.d/" .. SERVICE .. " " .. action
+    local rc = os.execute(cmd)
+    if type(rc) == "number" then
+        return rc == 0, (rc == 0) and "ok" or ("exit " .. tostring(rc))
+    elseif type(rc) == "boolean" then
+        return rc, rc and "ok" or "failed"
+    end
+    return true, "ok"
+end
+
+-- ---------------------------------------------------------------------------
+-- get_status()
+-- ---------------------------------------------------------------------------
+
+function M.get_status()
+    local uci = require "luci.model.uci".cursor()
+    local ubus = require "luci.ubus"
+
+    local port = tonumber(uci:get(UCI_CFG, UCI_SEC, "port")) or 18800
+
+    -- procd service state via ubus (no shell call).
+    -- `service list {name=...}` returns { "<name>" = { instances = { <inst> = { running, pid, ... } } } }.
+    local running, pid = false, nil
+    do
+        local conn = ubus.connect()
+        if conn then
+            local ok, res = pcall(conn.call, conn, "service", "list", { name = SERVICE })
+            if ok and type(res) == "table" then
+                local svc = res[SERVICE]
+                if type(svc) == "table" and type(svc.instances) == "table" then
+                    for _, inst in pairs(svc.instances) do
+                        if inst.running then
+                            running = true
+                            pid = inst.pid
+                            break
+                        end
+                    end
+                end
+            end
+            conn:close()
+        end
+    end
+
+    -- autostart state via shell, but only the fixed init script
+    local autostart = false
+    do
+        local f = io.popen("/etc/init.d/" .. SERVICE .. " enabled; true")
+        if f then
+            autostart = (trim(f:read("*l") or "") == "enabled")
+            f:close()
+        end
+    end
+
+    -- uptime (best-effort, optional)
+    local uptime_s
+    if pid then
+        local data = read_file("/proc/" .. pid .. "/stat")
+        local btime
+        local proc_stat = read_file("/proc/stat")
+        if proc_stat then
+            btime = tonumber(proc_stat:match("^btime%s+(%d+)"))
+        end
+        if data and btime then
+            -- field 22: starttime in clock ticks. The proc file has the
+            -- format `pid (comm) state ppid ...`; the comm may contain
+            -- spaces and is wrapped in parens, so we strip up to the last
+            -- `)` and then take the 20th whitespace-separated token (22-2
+            -- because pid+state are already consumed before comm).
+            local fields_str = data:match("%)%s+(.*)$") or ""
+            local tokens = {}
+            for t in fields_str:gmatch("%S+") do tokens[#tokens + 1] = t end
+            local starttime = tonumber(tokens[20])
+            local clk_tck   = 100  -- safe default; not relied on
+            if starttime then
+                uptime_s = os.time() - (btime + starttime / clk_tck)
+            end
+        end
+    end
+
+    -- launcher version banner (purely informational, no execution)
+    local version
+    if file_exists(LAUNCHER) then
+        local head = read_file(LAUNCHER) or ""
+        local ver = head:match("[Pp]icoclaw[%-_]?launcher[%-_%s]*[Vv]ersion:%s*([%w%.%-]+)")
+                 or head:match("VERSION=[\"']*([%w%.%-]+)")
+        if ver then version = ver end
+    end
+
+    return {
+        running   = running,
+        pid       = pid,
+        port      = port,
+        autostart = autostart,
+        uptime_s  = (uptime_s and uptime_s > 0) and math.floor(uptime_s) or nil,
+        version   = version,
+        launcher  = LAUNCHER,
+        log_path  = LOG_PATH,
+        service   = SERVICE,
+    }
+end
+
+-- ---------------------------------------------------------------------------
+-- get_logs(lines)
+-- ---------------------------------------------------------------------------
+
+function M.get_logs(lines)
+    lines = tonumber(lines) or 200
+    if lines < 1    then lines = 1 end
+    if lines > 2000 then lines = 2000 end
+
+    local uci = require "luci.model.uci".cursor()
+    local alt = uci:get(UCI_CFG, UCI_SEC, "log_alt") or ""
+
+    -- The path is restricted to a hard-coded set. We never pass arbitrary
+    -- user-controlled strings here; even UCI can only select from the
+    -- permitted values (see set_config).
+    local path = LOG_PATH
+    if alt == "syslog" then
+        path = "/var/log/messages"
+    elseif alt == "/var/log/picoclaw-webui.log" then
+        path = alt
+    elseif alt ~= "" then
+        path = LOG_PATH  -- unknown alt: ignore
+    end
+
+    if not file_exists(path) then
+        return { lines = {}, path = path, total = 0 }
+    end
+
+    -- Read the tail without invoking external binaries (no busybox `tail`
+    -- in the rpcd environment).
+    local f = io.open(path, "r")
+    if not f then return { lines = {}, path = path, total = 0 } end
+    local end_pos = f:seek("end") or 0
+    local CHUNK = 4096
+    local collected = ""
+    local pos = end_pos
+    while pos > 0 do
+        local step = math.min(CHUNK, pos)
+        pos = pos - step
+        f:seek("set", pos)
+        local chunk = f:read(step) or ""
+        collected = chunk .. collected
+        -- stop early if we already have enough
+        if select(2, collected:gsub("\n", "")) >= lines + 1 then break end
+    end
+    f:close()
+
+    local out = {}
+    for line in collected:gmatch("[^\n]+") do out[#out + 1] = line end
+    if #out > lines then
+        local unpack = table.unpack or unpack
+        out = { unpack(out, #out - lines + 1) }
+    end
+
+    return { lines = out, path = path, total = #out }
+end
+
+-- ---------------------------------------------------------------------------
+-- set_action(action)
+-- ---------------------------------------------------------------------------
+
+function M.set_action(action)
+    if type(action) ~= "string" then
+        return { ok = false, message = "action must be a string" }
+    end
+    if not ALLOWED_ACTIONS[action] then
+        return {
+            ok = false,
+            message = "unsupported action; allowed: start | stop | restart | enable | disable",
+        }
+    end
+    local ok, msg = invoke_initd(action)
+    return { ok = ok, action = action, message = msg }
+end
+
+-- ---------------------------------------------------------------------------
+-- set_config({...})
+-- ---------------------------------------------------------------------------
+
+local ALLOWED_CONFIG_FIELDS = {
+    enabled = function(v)
+        return v == "1" or v == "0" or v == "true" or v == "false"
+    end,
+    port = function(v)
+        local n = tonumber(v); return n and n >= 1 and n <= 65535
+    end,
+    log_alt = function(v)
+        return v == "" or v == "syslog" or v == "/var/log/picoclaw-webui.log"
+    end,
+    verbosity = function(v)
+        local n = tonumber(v); return n and n >= 0 and n <= 3
+    end,
+}
+
+function M.set_config(kv)
+    if type(kv) ~= "table" then
+        return { ok = false, message = "expected table" }
+    end
+    local uci = require "luci.model.uci".cursor()
+    local changed = {}
+    for k, v in pairs(kv) do
+        local validate = ALLOWED_CONFIG_FIELDS[k]
+        if not validate then
+            return { ok = false, message = "unknown field: " .. tostring(k) }
+        end
+        if not validate(tostring(v)) then
+            return { ok = false, message = "invalid value for " .. k }
+        end
+        local stored
+        if k == "enabled" then
+            stored = (v == "1" or v == "true") and "1" or "0"
+        elseif k == "port" or k == "verbosity" then
+            stored = tostring(tonumber(v))
+        else
+            stored = tostring(v)
+        end
+        uci:set(UCI_CFG, UCI_SEC, k, stored)
+        changed[#changed + 1] = k
+    end
+    uci:commit(UCI_CFG)
+    return { ok = true, changed = changed }
+end
+
+return M
