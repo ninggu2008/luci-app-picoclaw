@@ -8,6 +8,10 @@
     and NO shell-out. Every button goes through the JSON endpoint, which in
     turn calls either the rpcd object `luci.picoclaw` or the in-process
     backend - both only accept whitelisted action names.
+
+    All DOM writes go through diffing helpers (setText/setHTML/...): a
+    background poll that changes nothing must not touch the DOM, otherwise
+    the action area visibly blinks every poll interval.
 -%>
 
 <%+header%>
@@ -89,30 +93,65 @@
     var STATUS_URL = "<%=url('admin/services/picoclaw/call/status')%>";
     var ACTION_URL = "<%=url('admin/services/picoclaw/call/action')%>";
     var POLL_MS    = 5000;
+    var RECHECK_MS = 1500;   // quick re-poll after a button was pressed
 
-    // Last known state. `ready` is false until the first successful reply,
-    // so the buttons stay disabled instead of operating on stale data.
-    var state = { ready: false, running: false, autostart: false, busy: false };
+    // Last known state. `ready` is false until the first successful reply, so
+    // the buttons stay disabled instead of acting on stale data. `busy` is
+    // only set for user triggered actions - background polls never disable
+    // the buttons, that is what made the action row blink every 5 seconds.
+    var state = {
+        ready: false, running: false, autostart: false,
+        busy: false, polling: false, backend: null
+    };
 
     function $(id) { return document.getElementById(id); }
 
-    function applyButtons() {
-        var disabled = state.busy || !state.ready;
-
-        $("ps-start").disabled   = disabled || state.running;
-        $("ps-stop").disabled    = disabled || !state.running;
-        $("ps-restart").disabled = disabled;
-        $("ps-enable").disabled  = disabled || state.autostart;
-        $("ps-disable").disabled = disabled || !state.autostart;
+    // --- DOM helpers that only write when the value really changed --------
+    function setText(id, text) {
+        var el = $(id);
+        if (el && el.textContent !== text) el.textContent = text;
+    }
+    function setHTML(id, html) {
+        var el = $(id);
+        if (el && el.innerHTML !== html) el.innerHTML = html;
+    }
+    function setDisabled(id, disabled) {
+        var el = $(id);
+        if (el && el.disabled !== disabled) el.disabled = disabled;
+    }
+    function setShown(id, shown) {
+        var el = $(id);
+        if (el) {
+            var v = shown ? "block" : "none";
+            if (el.style.display !== v) el.style.display = v;
+        }
+    }
+    function setTitle(id, title) {
+        var el = $(id);
+        if (el && el.title !== title) el.title = title;
     }
 
+    function applyButtons() {
+        var off = state.busy || !state.ready;
+
+        setDisabled("ps-start",   off || state.running);
+        setDisabled("ps-stop",    off || !state.running);
+        setDisabled("ps-restart", off);
+        setDisabled("ps-enable",  off || state.autostart);
+        setDisabled("ps-disable", off || !state.autostart);
+    }
+
+    var flashTimer = null;
     function flash(msg, kind) {
         var el = $("ps-flash");
         if (!el) return;
+
         el.className = "alert-message alert-" + (kind || "info");
-        el.textContent = msg;
-        el.style.display = "block";
-        setTimeout(function () { el.style.display = "none"; }, 6000);
+        if (el.textContent !== msg) el.textContent = msg;
+        setShown("ps-flash", true);
+
+        if (flashTimer) clearTimeout(flashTimer);
+        flashTimer = setTimeout(function () { setShown("ps-flash", false); }, 6000);
     }
 
     function fmtUptime(s) {
@@ -130,13 +169,12 @@
     }
 
     function clearStatusCells() {
-        $("ps-pid").textContent       = "—";
-        $("ps-backend").textContent   = "—";
-        $("ps-port").textContent      = "—";
-        $("ps-uptime").textContent    = "—";
-        $("ps-version").textContent   = "—";
-        $("ps-log").textContent       = "—";
-        $("ps-autostart").innerHTML   = '<span class="badge badge-neutral">—</span>';
+        setText("ps-pid", "—");
+        setText("ps-port", "—");
+        setText("ps-uptime", "—");
+        setText("ps-version", "—");
+        setText("ps-log", "—");
+        setHTML("ps-autostart", '<span class="badge badge-neutral">—</span>');
     }
 
     function render(data) {
@@ -146,55 +184,72 @@
         state.running   = !!d.running;
         state.autostart = !!d.autostart;
 
-        $("ps-service").textContent = d.service || "picoclaw-webui";
-        $("ps-state").innerHTML = state.running
+        setText("ps-service", d.service || "picoclaw-webui");
+        setHTML("ps-state", state.running
             ? '<span class="badge badge-success">' + STR.running + '</span>'
-            : '<span class="badge badge-error">' + STR.stopped + '</span>';
+            : '<span class="badge badge-error">' + STR.stopped + '</span>');
         // How the state was determined (pidfile / proc / port / none) - handy
         // when a custom launcher does not behave like the shipped one.
-        $("ps-state").title = d.state_source ? ("state source: " + d.state_source) : "";
-        $("ps-pid").textContent     = (d.pid != null) ? String(d.pid) : "—";
-        $("ps-port").textContent    = (d.port != null) ? String(d.port) : "—";
-        $("ps-autostart").innerHTML = state.autostart
+        setTitle("ps-state", d.state_source ? ("state source: " + d.state_source) : "");
+
+        setText("ps-pid", (d.pid != null) ? String(d.pid) : "—");
+        setText("ps-port", (d.port != null) ? String(d.port) : "—");
+        setHTML("ps-autostart", state.autostart
             ? '<span class="badge badge-info">' + STR.autostart_on + '</span>'
-            : '<span class="badge badge-neutral">' + STR.autostart_off + '</span>';
-        $("ps-uptime").textContent  = fmtUptime(d.uptime_s);
-        $("ps-launcher").textContent = d.launcher || "—";
-        $("ps-version").textContent  = d.version || "—";
-        $("ps-log").textContent      = d.log_path || "—";
+            : '<span class="badge badge-neutral">' + STR.autostart_off + '</span>');
+        setText("ps-uptime", fmtUptime(d.uptime_s));
+        setText("ps-launcher", d.launcher || "—");
+        setText("ps-version", d.version || "—");
+        setText("ps-log", d.log_path || "—");
 
-        var backend = data.backend;
-        $("ps-backend").textContent = (backend === "ubus") ? STR.backend_rpcd
-                                    : (backend === "local") ? STR.backend_local
-                                    : "—";
+        // Only touch the backend row / warning when the backend changed, so a
+        // flapping rpcd backend cannot make the page blink.
+        if (data.backend !== state.backend) {
+            state.backend = data.backend;
 
-        // Tell the user when the rpcd object could not be used: the page
-        // still works (in-process backend), but `ubus call luci.picoclaw`
-        // from other tools will not.
-        var warn = $("ps-backend-warn");
-        if (warn) {
-            if (data.backend_error) {
-                warn.textContent = STR.backend_warn + " (" + data.backend_error + ")";
-                warn.style.display = "block";
-            } else {
-                warn.style.display = "none";
+            setText("ps-backend", (data.backend === "ubus") ? STR.backend_rpcd
+                                : (data.backend === "local") ? STR.backend_local
+                                : "—");
+
+            var warn = $("ps-backend-warn");
+            if (warn) {
+                if (data.backend_error) {
+                    // Tell the user that the rpcd object could not be used:
+                    // the page still works, but `ubus call luci.picoclaw`
+                    // from other tools will not.
+                    setText("ps-backend-warn",
+                        STR.backend_warn + " (" + data.backend_error + ")");
+                    setShown("ps-backend-warn", true);
+                } else {
+                    setShown("ps-backend-warn", false);
+                }
             }
         }
 
         var webui = $("ps-webui");
         if (webui && d.port) {
-            webui.href = window.location.protocol + "//" + window.location.hostname + ":" + d.port + "/";
+            var href = window.location.protocol + "//" + window.location.hostname + ":" + d.port + "/";
+            if (webui.href !== href) webui.href = href;
         }
     }
 
+    // Remember the last error so a permanently failing poll does not re-flash
+    // the same message every interval.
+    var lastFlash = null;
+
     function renderError(err) {
+        var msg = err || STR.status_unavail;
+
         state.ready   = false;
         state.running = false;
 
-        $("ps-state").innerHTML =
-            '<span class="badge badge-error">' + STR.status_unavail + '</span>';
+        setHTML("ps-state", '<span class="badge badge-error">' + STR.status_unavail + '</span>');
         clearStatusCells();
-        flash(err || STR.status_unavail, "warning");
+
+        if (msg !== lastFlash) {
+            lastFlash = msg;
+            flash(msg, "warning");
+        }
     }
 
     function parseReply(data) {
@@ -206,7 +261,7 @@
 
     // Run `done` exactly once, whether the XHR succeeds, fails or never
     // returns (8s safety net) - a stalled request must never leave the page
-    // stuck on "loading…" with disabled buttons.
+    // stuck on "loading…".
     function withTimeout(done) {
         var fired = false, timer = setTimeout(function () {
             if (!fired) { fired = true; done(STR.status_unavail); }
@@ -221,25 +276,29 @@
     }
 
     function refresh() {
-        if (state.busy) return;      // a previous request is still in flight
-        state.busy = true;
-        applyButtons();
+        if (state.polling || state.busy) return;   // one request at a time
+        state.polling = true;
 
         var finish = withTimeout(function (errmsg) {
-            state.busy = false;
+            state.polling = false;
             if (errmsg) renderError(errmsg);
-            applyButtons();
         });
 
         XHR.get(STATUS_URL, null, function (x, data) {
             data = parseReply(data);
+
             if (data && data.ok) {
+                lastFlash = null;
                 render(data);
                 finish(null);
             } else {
                 finish((data && data.error) || STR.status_unavail);
             }
         });
+    }
+
+    function recheck() {
+        setTimeout(refresh, RECHECK_MS);
     }
 
     function sendAction(name) {
@@ -266,7 +325,9 @@
             }
 
             finish();
-            refresh();
+            // procd needs a moment to start/stop the instance - poll twice,
+            // quickly, so the table reflects the result of the click.
+            recheck();
         });
     }
 

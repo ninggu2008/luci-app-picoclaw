@@ -215,6 +215,16 @@ function service_state(port) {
 	return { running: false, pid: null, source: 'none' };
 }
 
+/* Is the launcher present and executable? */
+function launcher_ok() {
+	try {
+		return !!access(LAUNCHER, 'x');
+	}
+	catch (e) { }
+
+	return false;
+}
+
 /* Autostart == the /etc/rc.d/S* symlink created by `/etc/init.d/... enable`. */
 function autostart_enabled() {
 	try {
@@ -405,22 +415,56 @@ const methods = {
 			if (type(action) != 'string' || !ALLOWED_ACTIONS[action])
 				return { ok: false, action: action, message: 'unsupported action' };
 
+			/* Fail early (with a useful message) instead of letting procd
+			 * enter a crash loop for a minute. */
+			if ((action == 'start' || action == 'restart') && !launcher_ok())
+				return { ok: false, action: action,
+				         message: 'launcher missing or not executable: ' + LAUNCHER };
+
 			let rc = 1;
 
 			try {
-				/* Bounded: a stuck init script must not block rpcd's
-				 * main loop forever. */
-				rc = system('/etc/init.d/' + SERVICE + ' ' + action, 30000);
+				/* No timeout argument here: ucode's system(cmd, timeout)
+				 * only wakes up when sigtimedwait() notices SIGCHLD, which
+				 * is not reliable - passing e.g. 30000 blocks for the full
+				 * 30 seconds even though the script finished at once.  The
+				 * init script below only calls procd/uci helpers, so it
+				 * cannot run longer than a moment. */
+				rc = system('/etc/init.d/' + SERVICE + ' ' + action);
 			}
 			catch (e) {
 				return { ok: false, action: action, message: 'invocation failed' };
 			}
 
-			return {
-				ok:      (rc == 0),
-				action:  action,
-				message: (rc == 0) ? 'ok' : ('exit ' + rc),
-			};
+			if (rc != 0)
+				return { ok: false, action: action, message: 'exit ' + rc };
+
+			/* start / restart: confirm that the instance really stays up.
+			 * The init script also returns 0 when the launcher exits
+			 * immediately (daemonizing launchers, broken placeholders),
+			 * which used to look like "the button does nothing". */
+			if (action == 'start' || action == 'restart') {
+				const port = get_port();
+
+				for (let i = 0; i < 8; i++) {
+					if (service_state(port).running)
+						return { ok: true, action: action, message: 'ok' };
+
+					sleep(250);   /* milliseconds */
+				}
+
+				return { ok: false, action: action,
+				         message: 'started but not running (see ' + LOG_PATH + ' and logread)' };
+			}
+
+			/* enable / disable are synchronous, so the rc.d symlink must
+			 * match the requested state. */
+			if (action == 'enable' || action == 'disable') {
+				if (autostart_enabled() != (action == 'enable'))
+					return { ok: false, action: action, message: 'autostart flag not applied' };
+			}
+
+			return { ok: true, action: action, message: 'ok' };
 		},
 	},
 

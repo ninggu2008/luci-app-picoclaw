@@ -16,7 +16,9 @@
 #   * Real picoclaw implementations MUST honour PICOCLAW_PORT and
 #     PICOCLAW_LOGFILE so the LuCI app remains accurate.
 #   * The launcher is invoked as a foreground process by procd; do not
-#     daemonize.
+#     daemonize.  Anything that forks into the background makes procd
+#     believe the service crashed and restart it every respawn_timeout
+#     seconds (that is what uhttpd does unless it is started with -f).
 
 # picoclaw-launcher version: 1.0.0-placeholder
 VERSION=1.0.0-placeholder
@@ -24,6 +26,9 @@ VERSION=1.0.0-placeholder
 PORT="${PICOCLAW_PORT:-18800}"
 VERBOSITY="${PICOCLAW_VERBOSITY:-1}"
 LOGFILE="${PICOCLAW_LOGFILE:-/var/log/picoclaw-webui.log}"
+
+# Docroot used by the uhttpd based placeholder.
+DOCROOT="${PICOCLAW_DOCROOT:-/var/lib/picoclaw-placeholder}"
 
 log() {
     [ "${VERBOSITY:-1}" -ge 1 ] || return 0
@@ -38,26 +43,48 @@ trap cleanup INT TERM
 
 log "starting placeholder launcher version=$VERSION port=$PORT"
 
-# Find a usable single-shot HTTP tool. Prefer uhttpd if available (it's
-# already in PATH on ImmortalWRT), fall back to a tiny shell loop.
+# Preferred server: uhttpd, which ships with LuCI and is already running for
+# the web UI.  It MUST be started with -f (do not fork), otherwise the
+# process supervised by procd exits immediately and procd restarts the
+# service in a tight loop.
 if command -v uhttpd >/dev/null 2>&1; then
-    log "using uhttpd"
-    exec uhttpd -p "$PORT" -h /dev/null -L 0
+    if mkdir -p "$DOCROOT" 2>/dev/null; then
+        cat > "$DOCROOT/index.html" <<HTML
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>picoclaw placeholder</title>
+<style>
+body { font-family: sans-serif; margin: 3em; }
+code { background: #eee; padding: 0 .3em; }
+</style>
+</head>
+<body>
+<h1>picoclaw placeholder launcher</h1>
+<p>version <code>$VERSION</code>, port <code>$PORT</code></p>
+<p>Replace <code>/opt/picoclaw/picoclaw-launcher</code> with the real
+picoclaw launcher to deploy the full feature set.</p>
+</body>
+</html>
+HTML
+        log "using uhttpd (foreground) on port $PORT, docroot $DOCROOT"
+        exec uhttpd -f -p "$PORT" -h "$DOCROOT"
+    fi
+
+    log "ERROR: cannot create docroot $DOCROOT; falling back to nc"
+else
+    log "no uhttpd available, using shell placeholder"
 fi
 
-# Fallback: shell-based placeholder that returns a self-identifying page
-# on every request and writes a single line per request to the logfile.
-log "no uhttpd available, using shell placeholder"
+# Fallback: tiny single-shot HTTP responder built on busybox nc.
+LISTEN_ADDR="0.0.0.0"
 
-LISTEN_ADDR="127.0.0.1"
-# Try to listen using busybox nc if present, otherwise exit.
 if ! command -v nc >/dev/null 2>&1; then
     log "ERROR: neither uhttpd nor nc available; placeholder cannot serve"
     sleep infinity
 fi
 
-# Tiny TCP "HTTP" placeholder using a single-shot nc loop. Real picoclaw
-# implementations are expected to provide their own server.
 while :; do
     nc -l -p "$PORT" -s "$LISTEN_ADDR" >>"$LOGFILE" 2>&1 <<EOF
 HTTP/1.1 200 OK

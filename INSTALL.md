@@ -203,6 +203,21 @@ pid, nor shows the launcher path in its command line, nor listens on the
 configured port; in that case check `/var/log/picoclaw-webui.log` and the
 `PICOCLAW_*` environment variables from section 5.
 
+Symptom: pressing Start or Restart flashes `started but not running (...)`.
+The init script accepted the command but nothing is listening afterwards -
+that is exactly what a launcher that exits immediately or daemonizes looks
+like (see section 5):
+
+```sh
+logread | grep picoclaw-webui        # "in a crash loop" / launcher errors
+tail -20 /var/log/picoclaw-webui.log
+ps w | grep -F /opt/picoclaw/picoclaw-launcher
+```
+
+Note that `procd` restarts a crashing instance every 5 seconds for up to
+5 attempts, which is why the launcher banner can appear several times in
+the log within a minute.
+
 ## 4. Uninstall
 
 ```sh
@@ -233,6 +248,20 @@ script:
 | `PICOCLAW_VERBOSITY` | 0..3                                   |
 | `PICOCLAW_CONFIG`    | path to UCI config (`/etc/config/picoclaw`) |
 | `PICOCLAW_LOGFILE`   | log file path                          |
+| `PICOCLAW_DOCROOT`   | docroot used by the placeholder's uhttpd (default `/var/lib/picoclaw-placeholder`) |
 
-It must also run as a **foreground** process — procd manages its
-lifetime and respawns it on exit.
+It must also run as a **foreground** process: procd supervises the pid it
+started and treats any exit as a crash.  A launcher that forks into the
+background (this is what `uhttpd` does without `-f`, and what the old
+placeholder did) therefore makes procd restart it every
+`respawn_timeout` (5 s) until it gives up:
+
+```
+logread | grep "in a crash loop"
+```
+
+The same happens when the launcher cannot start at all - for example the
+placeholder's old `uhttpd -h /dev/null` invocation, which exited
+immediately with `Error: Invalid directory /dev/null`.  The Status page
+reports this as `started but not running (see ...)` when a Start/Restart
+button is pressed, instead of pretending the action succeeded.

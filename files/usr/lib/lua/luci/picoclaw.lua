@@ -30,9 +30,10 @@
        supplied is opened or executed.
 --]]
 
-local fs  = require "nixio.fs"
-local uci = require "luci.model.uci"
-local sys = require "luci.sys"
+local fs    = require "nixio.fs"
+local nixio = require "nixio"
+local uci   = require "luci.model.uci"
+local sys   = require "luci.sys"
 
 local M = { }
 
@@ -390,6 +391,16 @@ function M.set_action(action)
 		return { ok = false, action = action, message = "unsupported action" }
 	end
 
+	-- Fail early (with a useful message) instead of letting procd enter a
+	-- crash loop for a minute.
+	if (action == "start" or action == "restart") and not fs.access(LAUNCHER, "x") then
+		return {
+			ok      = false,
+			action  = action,
+			message = "launcher missing or not executable: " .. LAUNCHER,
+		}
+	end
+
 	-- `action` is drawn from the literal ALLOWED_ACTIONS table above; the
 	-- only subprocess ever spawned is the fixed init script.
 	local rc = 1
@@ -400,11 +411,40 @@ function M.set_action(action)
 		rc = math.floor(tonumber(status) or 1)
 	end
 
-	return {
-		ok      = (rc == 0),
-		action  = action,
-		message = (rc == 0) and "ok" or ("exit " .. tostring(rc)),
-	}
+	if rc ~= 0 then
+		return { ok = false, action = action, message = "exit " .. tostring(rc) }
+	end
+
+	-- `start` / `restart`: confirm that the instance really stays up.  procd
+	-- (and therefore the init script) also reports success when the launcher
+	-- exits immediately - e.g. a launcher that daemonizes or a broken
+	-- placeholder - which used to look like "the button does nothing".
+	if action == "start" or action == "restart" then
+		local port = get_port()
+
+		for _ = 1, 8 do
+			if service_state(port).running then
+				return { ok = true, action = action, message = "ok" }
+			end
+
+			nixio.nanosleep(0, 250000000)   -- 250 ms
+		end
+
+		return {
+			ok      = false,
+			action  = action,
+			message = "started but not running (see " .. LOG_PATH .. " and logread)",
+		}
+	end
+
+	-- `enable` / `disable` are synchronous, so the rc.d symlink must match.
+	if action == "enable" or action == "disable" then
+		if autostart_enabled() ~= (action == "enable") then
+			return { ok = false, action = action, message = "autostart flag not applied" }
+		end
+	end
+
+	return { ok = true, action = action, message = "ok" }
 end
 
 function M.set_config(kv)
