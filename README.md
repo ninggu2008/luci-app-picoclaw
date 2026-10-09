@@ -99,7 +99,7 @@ ls bin/packages/<arch>/luci/luci-app-picoclaw_*.ipk
 
 ```sh
 curl -L -o /tmp/luci-app-picoclaw.ipk \
-    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-4_all.ipk
+    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-5_all.ipk
 opkg install /tmp/luci-app-picoclaw.ipk
 
 # Or pick from the Actions workflow artifacts page:

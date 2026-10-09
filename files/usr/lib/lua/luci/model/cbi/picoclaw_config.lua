@@ -18,7 +18,11 @@ local sys  = require "luci.sys"
 
 local _ = i18n.translate or i18n.gettext or function(s) return s end
 
-local INIT = "/etc/init.d/picoclaw-webui"
+-- Autostart symlink created by `/etc/init.d/picoclaw-webui enable`
+-- (START=99, STOP=10 in that script).
+local RCD_LINK   = "/etc/rc.d/S99picoclaw-webui"
+local RCD_LINKS  = RCD_LINK .. " /etc/rc.d/K10picoclaw-webui"
+local LINK_TARGET = "../init.d/picoclaw-webui"
 
 local m = Map("picoclaw", _("picoclaw"),
     _("WebUI configuration for picoclaw. Saving this page (Save & Apply) "
@@ -40,20 +44,24 @@ local s = m:section(TypedSection, "webui", _("WebUI"))
 s.anonymous = true
 s.addremove = false
 
--- Autostart at boot. The authoritative state is the /etc/rc.d symlink
--- (that is what /etc/init.d/rcS evaluates); `enable` / `disable` in the
--- init script keep the UCI flag and the symlink in sync, so route this
--- write through the init script as well.
+-- Autostart at boot.  The authoritative state is the /etc/rc.d symlink (what
+-- /etc/init.d/rcS evaluates), so create/remove it together with the UCI flag.
 local o = s:option(Flag, "enabled", _("Enable"))
 o.default   = "0"
 o.rmempty   = false
 o.description = _("Start the picoclaw-webui service at boot. "
     .. "When you save this page the service is restarted automatically.")
 o.write = function(self, section, value)
-    local current = tostring(self:cfgvalue(section) or "0")
-
-    if tostring(value) ~= current then
-        sys.call(INIT .. " " .. ((value == "1") and "enable" or "disable"))
+    -- Do NOT call `/etc/init.d/picoclaw-webui enable|disable` from here:
+    -- those verbs run `uci commit`, which clears the pending UCI delta
+    -- during the CBI parse.  The "Save & Apply" flow applies that delta
+    -- afterwards and would then report "There are no changes to apply".
+    -- Touching the symlink directly is enough - the flag itself is written
+    -- through the normal CBI path below.
+    if tostring(value) == "1" then
+        sys.call("ln -sf " .. LINK_TARGET .. " " .. RCD_LINK)
+    else
+        sys.call("rm -f " .. RCD_LINKS)
     end
 
     return self.map:set(section, self.alias or self.option, value)

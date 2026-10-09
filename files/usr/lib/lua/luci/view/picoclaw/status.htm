@@ -282,6 +282,10 @@
         var finish = withTimeout(function (errmsg) {
             state.polling = false;
             if (errmsg) renderError(errmsg);
+            // render()/renderError() updated `state` - push it to the buttons
+            // now, otherwise they would stay in their initial disabled state
+            // (the first poll is what flips state.ready to true).
+            applyButtons();
         });
 
         XHR.get(STATUS_URL, null, function (x, data) {
