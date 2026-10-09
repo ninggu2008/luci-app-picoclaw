@@ -36,7 +36,8 @@ function index()
         {"admin", "services", "picoclaw"},
         alias("admin", "services", "picoclaw", "status"),
         _("picoclaw"), 50
-    ).acl = true
+    )
+    root.acl = true
 
     entry(
         {"admin", "services", "picoclaw", "status"},
