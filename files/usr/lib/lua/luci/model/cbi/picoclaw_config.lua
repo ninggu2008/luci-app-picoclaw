@@ -85,6 +85,15 @@ o.description = _("Passed to the launcher as separate arguments (split on "
     .. "127.0.0.1; clear this field for launchers that do not know these "
     .. "flags.")
 
+-- picoclaw's own configuration file (JSON).  This is NOT this package's UCI
+-- file: the launcher parses the given path as JSON.
+o = s:option(Value, "config_file", _("Launcher config file"))
+o.default     = ""
+o.rmempty     = true
+o.description = _("Path to picoclaw's own JSON configuration file, passed as "
+    .. "PICOCLAW_CONFIG. Leave empty to let the launcher use its default - do "
+    .. "not point this at /etc/config/picoclaw, which is UCI, not JSON.")
+
 -- Log destination
 o = s:option(ListValue, "log_alt", _("Log destination"))
 o.default     = ""

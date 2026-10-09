@@ -79,7 +79,11 @@ const FIELD_VALIDATORS = {
 	/* Extra launcher arguments.  They are handed to the launcher as separate
 	 * argv words (never via a shell); the conservative charset keeps the
 	 * option readable. */
-	args:      (v) => (v == '' || match(v, /^[A-Za-z0-9 ._%:@,+\/-]*$/) != null),
+	args:        (v) => (v == '' || match(v, /^[A-Za-z0-9 ._%:@,+\/-]*$/) != null),
+	/* Path to picoclaw's own (JSON) configuration file; empty = launcher
+	 * default.  Absolute and conservative so a typo cannot make the launcher
+	 * read an unrelated file. */
+	config_file: (v) => (v == '' || match(v, /^\/[A-Za-z0-9 ._\/-]*$/) != null),
 };
 
 // ---------------------------------------------------------------------------

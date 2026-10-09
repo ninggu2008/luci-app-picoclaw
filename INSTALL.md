@@ -270,9 +270,15 @@ script:
 | -------------------- | -------------------------------------- |
 | `PICOCLAW_PORT`      | TCP port to bind (1..65535)             |
 | `PICOCLAW_VERBOSITY` | 0..3                                   |
-| `PICOCLAW_CONFIG`    | path to UCI config (`/etc/config/picoclaw`) |
 | `PICOCLAW_LOGFILE`   | log file path                          |
+| `PICOCLAW_CONFIG`    | path to **picoclaw's own JSON config** - only exported when `picoclaw.webui.config_file` is set, never pointed at the UCI file |
 | `PICOCLAW_DOCROOT`   | docroot used by the fallback's uhttpd (default `/var/lib/picoclaw-placeholder`) |
+
+These names are this package's convention; a launcher that does not read
+them can still be configured through the `args` option.  Do **not** point
+`config_file`/`PICOCLAW_CONFIG` at `/etc/config/picoclaw`: that file is UCI,
+while the launcher parses the given path as JSON (it fails with
+`config.json syntax error ... invalid character 'c'`).
 
 Extra command line arguments are configured with the UCI option
 `picoclaw.webui.args` (LuCI: *Configuration -> Extra arguments*).  It defaults

@@ -124,6 +124,7 @@ local ALLOWED_CONFIG_FIELDS = {
     log_alt   = true,
     verbosity = true,
     args      = true,
+    config_file = true,
 }
 
 local function write_json(tbl, status)

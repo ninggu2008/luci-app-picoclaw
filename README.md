@@ -59,7 +59,7 @@ luci-app-picoclaw/
 | Tab           | Description                                                          |
 | ------------- | -------------------------------------------------------------------- |
 | Status        | Live state, PID, port, autostart, uptime, version, log path          |
-| Configuration | UCI form for `enabled / port / args / log_alt / verbosity`           |
+| Configuration | UCI form for `enabled / port / args / config_file / log_alt / verbosity` |
 | Logs          | Last N lines of `/var/log/picoclaw-webui.log`, optional auto-refresh |
 | Open WebUI    | Redirect to the configured port on the same host                     |
 
@@ -99,7 +99,7 @@ ls bin/packages/<arch>/luci/luci-app-picoclaw_*.ipk
 
 ```sh
 curl -L -o /tmp/luci-app-picoclaw.ipk \
-    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-9_all.ipk
+    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-10_all.ipk
 opkg install /tmp/luci-app-picoclaw.ipk
 
 # Or pick from the Actions workflow artifacts page:
@@ -152,6 +152,12 @@ restrict it to a readable character set).
 it binds `127.0.0.1` only and browsers get *connection refused*.  The Status
 page shows that state as `18800 (loopback only, not reachable from the LAN)`
 and reports nothing listening as `18800 (not listening)`.
+
+`picoclaw.webui.config_file` optionally points at **picoclaw's own JSON
+configuration file** and is exported as `PICOCLAW_CONFIG`; empty (the
+default) leaves the launcher's own default in place.  It must never point at
+`/etc/config/picoclaw`, which is this package's UCI file - the launcher
+parses the path as JSON.
 
 The real launcher lives at `/opt/picoclaw/picoclaw-launcher` and is owned
 by the `picoclaw-webui` package (or installed by hand) - **this package

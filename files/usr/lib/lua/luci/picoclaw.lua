@@ -87,6 +87,12 @@ local FIELD_VALIDATORS = {
 	args = function(v)
 		return v == "" or v:match("^[%w%s%._%-%/=:@,%+]+$") ~= nil
 	end,
+	-- Path to picoclaw's own (JSON) configuration file.  Empty means "let the
+	-- launcher use its default".  Must be absolute so a typo cannot make the
+	-- launcher read a relative file from its working directory.
+	config_file = function(v)
+		return v == "" or v:match("^/[%w%s%._%-%/]+$") ~= nil
+	end,
 }
 
 -- ---------------------------------------------------------------------------

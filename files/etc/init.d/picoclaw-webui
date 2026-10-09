@@ -123,11 +123,12 @@ ensure_logfile() {
 # ---------------------------------------------------------------------------
 
 start_service() {
-    local port verbosity prog args
+    local port verbosity prog args config_file
 
     port=$(uci_get port 18800)
     verbosity=$(uci_get verbosity 1)
     args=$(uci_get args '')
+    config_file=$(uci_get config_file '')
 
     prog=$(resolve_launcher)
 
@@ -161,11 +162,26 @@ start_service() {
         sh "$PIDFILE" "$PROG" $args
     set +f
 
-    procd_set_param env \
-        PICOCLAW_PORT="$port" \
-        PICOCLAW_VERBOSITY="$verbosity" \
-        PICOCLAW_CONFIG="/etc/config/picoclaw" \
-        PICOCLAW_LOGFILE="$LOGFILE"
+    # PICOCLAW_CONFIG must point at *picoclaw's own* configuration file (JSON) -
+    # NOT at this package's UCI file /etc/config/picoclaw, which the launcher
+    # would try to parse as JSON and fail with
+    #   config.json syntax error at line 2 ... invalid character 'c'
+    # It is only exported when the user configured a path; otherwise the
+    # launcher keeps using its own default.  NOTE: the PICOCLAW_* names are
+    # this package's convention - a launcher that does not read them can still
+    # be configured through the `args` option above.
+    if [ -n "$config_file" ]; then
+        procd_set_param env \
+            PICOCLAW_PORT="$port" \
+            PICOCLAW_VERBOSITY="$verbosity" \
+            PICOCLAW_CONFIG="$config_file" \
+            PICOCLAW_LOGFILE="$LOGFILE"
+    else
+        procd_set_param env \
+            PICOCLAW_PORT="$port" \
+            PICOCLAW_VERBOSITY="$verbosity" \
+            PICOCLAW_LOGFILE="$LOGFILE"
+    fi
 
     # Restart the instance when the configuration file changes (procd
     # watches this path), and respawn it if it dies.
@@ -184,7 +200,7 @@ start_service() {
 
     procd_close_instance
 
-    log "instance started: launcher=$PROG args=[$args] port=$port verbosity=$verbosity"
+    log "instance started: launcher=$PROG args=[$args] port=$port verbosity=$verbosity config=[${config_file:-<launcher default>}]"
 }
 
 service_triggers() {
