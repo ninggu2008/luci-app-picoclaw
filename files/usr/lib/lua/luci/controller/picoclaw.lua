@@ -26,13 +26,17 @@ function index()
     end
 
     -- Parent entry: "Services" -> "picoclaw" (aliases to status).
+    --
+    -- Newer LuCI's `alias()` is implemented as `alias(path, ...) -> {
+    -- type="alias", path = { path, ... } }`. Passing a single Lua table
+    -- produces `path = { <table> }`, which later fails in dispatcher.lua
+    -- with `invalid value (table) at index 1 in table for 'concat'`.
+    -- Use varargs so the path flattens correctly.
     local root = entry(
         {"admin", "services", "picoclaw"},
-        alias({"admin", "services", "picoclaw", "status"}),
+        alias("admin", "services", "picoclaw", "status"),
         _("picoclaw"), 50
-    )
-    root.dependent = true
-    root.acl       = true
+    ).acl = true
 
     entry(
         {"admin", "services", "picoclaw", "status"},
