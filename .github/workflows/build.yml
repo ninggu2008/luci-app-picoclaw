@@ -3,17 +3,16 @@
 # Build luci-app-picoclaw .ipk for several ImmortalWRT / OpenWrt targets.
 #
 # Triggers:
-#   * push to main  -> builds + uploads artifact
-#   * tag v*        -> builds + attaches .ipk to a GitHub Release
-#   * pull_request  -> builds (verification only)
-#   * workflow_dispatch -> manual run
+#   * push to main           -> builds + uploads artifact
+#   * tag v*                 -> builds + attaches .ipk to a GitHub Release
+#   * pull_request           -> builds (verification only)
+#   * workflow_dispatch      -> manual build (full matrix)
 #
-# How it works:
-#   The openwrt/gh-action-sdk action:
-#     1. pulls `immortalwrt/sdk:<release>-<arch>` (override via IMAGE_PREFIX)
-#     2. registers this repo as a feed (`src-link`)
-#     3. runs `make package/luci-app-picoclaw/compile`
-#     4. copies the produced .ipk to ARTIFACT_DIR
+# Why we don't use openwrt/gh-action-sdk:
+#   That action's Dockerfile hardcodes `FROM openwrtorg/sdk:$ARCH`
+#   without a release version, so it fails for tagged releases like
+#   `21.02.7` and for non-x86_64 arches. We pull the SDK directly via
+#   `container:` and pull `immortalwrt/sdk:<release>-<arch>`.
 
 name: Build IPK
 
@@ -24,20 +23,10 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
-    inputs:
-      release:
-        description: "ImmortalWRT / OpenWrt release (e.g. 21.02.7, 22.03.3)"
-        required: false
-        default: "21.02.7"
-      arch:
-        description: "Target architecture"
-        required: false
-        default: "x86_64"
 
 permissions:
   contents: read
 
-# Cancel any in-flight run for the same ref.
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -53,7 +42,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ImmortalWRT 21.02
           - release: 21.02.7
             arch: x86_64
           - release: 21.02.7
@@ -62,49 +50,91 @@ jobs:
             arch: mipsel_24kc
           - release: 21.02.7
             arch: arm_cortex-a7_neon-vfpv4
-          # Legacy / fallback (smaller but slower)
           - release: 19.07.10
             arch: x86_64
 
+    container:
+      image: immortalwrt/sdk:${{ matrix.release }}-${{ matrix.arch }}
+
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Override release/arch (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Locate SDK buildroot inside container
+        id: locate
         run: |
-          echo "RELEASE=${{ github.event.inputs.release }}" >> $GITHUB_ENV
-          echo "ARCH=${{ github.event.inputs.arch }}" >> $GITHUB_ENV
+          for d in /sdk /openwrt /openwrt_sdk /buildroot; do
+            if [ -f "$d/feeds.conf.default" ]; then
+              echo "Found SDK buildroot at $d"
+              echo "buildroot=$d" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "ERROR: SDK buildroot not found. Top-level dirs:" >&2
+          ls / >&2
+          exit 1
 
-      - name: Build IPK
-        uses: openwrt/gh-action-sdk@v2
-        env:
-          REPO_URL:             https://github.com/${{ github.repository }}
-          REPO_BRANCH:          ${{ github.ref_name }}
-          TARGET:               ${{ matrix.arch }}
-          RELEASE:              ${{ matrix.release }}
-          IMAGE_PREFIX:         immortalwrt
-          PACKAGES:             luci-app-picoclaw
-          ARTIFACT_DIR:         artifacts
-          ARTIFACT_RETENTION_DAYS: 14
-          BUILD_LOG:            build.log
-
-      - name: Show build log tail
-        if: always()
+      - name: Register local feed and build
+        working-directory: ${{ steps.locate.outputs.buildroot }}
         run: |
-          if [ -f artifacts/build.log ]; then
-            tail -n 80 artifacts/build.log
+          set -euo pipefail
+
+          # Register this checkout as a feed named `luci-picoclaw`.
+          echo "src-link luci-picoclaw $GITHUB_WORKSPACE" >> feeds.conf.default
+
+          # Refresh feeds and install our package (+ dependencies declared
+          # by the Makefile, which are all in the stock ImmortalWRT feeds).
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -p luci-picoclaw
+
+          # Pin the package in defconfig. We don't run `make menuconfig`,
+          # so this avoids relying on TUI defaults.
+          echo "CONFIG_PACKAGE_luci-app-picoclaw=m" >> .config
+          make defconfig
+
+          # Build only this package (no full world build, no signing).
+          make package/luci-app-picoclaw/compile V=s -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Tail build log on failure
+        if: failure()
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
+            echo "--- last 80 lines of build.log ---"
+            tail -n 80 "$GITHUB_WORKSPACE/build.log"
           fi
+
+      - name: Locate built .ipk
+        id: ipk
+        working-directory: ${{ steps.locate.outputs.buildroot }}
+        run: |
+          shopt -s globstar nullglob
+          ipk=( bin/packages/*/luci/luci-app-picoclaw_*.ipk )
+          if [ ${#ipk[@]} -eq 0 ] || [ ! -f "${ipk[0]}" ]; then
+            echo "ERROR: luci-app-picoclaw_*.ipk not found under bin/packages/"
+            find bin/packages -type d -print
+            exit 1
+          fi
+          echo "Built: ${ipk[0]}"
+          echo "ipk_path=${ipk[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Upload IPK artifact
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-picoclaw-${{ matrix.release }}-${{ matrix.arch }}
-          path: artifacts/bin/packages/*/luci/luci-app-picoclaw_*.ipk
+          path: ${{ steps.locate.outputs.buildroot }}/${{ steps.ipk.outputs.ipk_path }}
           if-no-files-found: error
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.release }}-${{ matrix.arch }}
+          path: ${{ github.workspace }}/build.log
+          if-no-files-found: ignore
+
   # ---------------------------------------------------------------------
-  # Aggregate: collect artifacts from a tag run, create GitHub Release
+  # Aggregate: on tag push, collect all .ipk artifacts and create
+  # a GitHub Release.
   # ---------------------------------------------------------------------
   release:
     name: Publish GitHub Release
@@ -120,10 +150,10 @@ jobs:
           path: dist
           merge-all: false
 
-      - name: List artifacts
+      - name: List collected artifacts
         run: |
-          echo "Collected artifacts:"
-          find dist -type f -name '*.ipk' -print
+          echo "Collected IPKs:"
+          find dist -type f -name '*.ipk' -print | sort
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
