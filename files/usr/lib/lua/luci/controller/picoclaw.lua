@@ -139,14 +139,20 @@ local function call_ubus(method, params)
         return nil, "ubus_unavailable"
     end
 
-    local res
-    pcall(function()
-        res = conn:call("luci.picoclaw", method, params or {})
-    end)
+    local ok_call, res = pcall(conn.call, conn, "luci.picoclaw", method, params or {})
     pcall(function() conn:close() end)
 
+    if not ok_call then
+        return nil, "ubus_call_threw: " .. tostring(res)
+    end
     if res == nil then
-        return nil, "ubus_call_returned_nil"
+        -- This is the actual case the user is hitting. It almost always
+        -- means the rpcd plugin at /usr/lib/rpcd/luci.picoclaw is NOT
+        -- registered as a ubus object (rpcd not restarted, or the file
+        -- is missing / has a syntax error). Surface the most likely
+        -- cause in the error so the user can act on it.
+        return nil, "ubus_call_returned_nil: object 'luci.picoclaw' not registered "
+                 .. "(check: ls -la /usr/lib/rpcd/ ; /etc/init.d/rpcd restart)"
     end
     return res
 end
