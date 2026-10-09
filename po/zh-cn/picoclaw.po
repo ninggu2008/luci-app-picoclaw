@@ -160,6 +160,9 @@ msgstr "以 PICOCLAW_VERBOSITY 环境变量传给启动器（0..3）。"
 msgid "placeholder launcher, not the real picoclaw"
 msgstr "占位启动器（非真正的 picoclaw）"
 
+msgid "loopback only, not reachable from the LAN"
+msgstr "仅监听本机地址，局域网无法访问"
+
 msgid "not listening"
 msgstr "未监听"
 

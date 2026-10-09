@@ -190,6 +190,19 @@ If (3) works but (1) does not, the page will still display correct data
 (the controller falls back automatically); fix the plugin by reloading
 rpcd. If (3) fails too, the Lua runtime dependencies from 2.3 are missing.
 
+Symptom: the WebUI is unreachable from the LAN ("connection refused") but
+the Status tab says `running`.
+
+```sh
+netstat -ltnp | grep 18800
+#   127.0.0.1:18800 => the launcher only listens on loopback: start it with
+#                      `-public` (see the args option above)
+#   nothing at all => the launcher does not serve HTTP at all
+```
+
+The Status page annotates the Port row accordingly: `18800 (not listening)`
+or `18800 (loopback only, not reachable from the LAN)`.
+
 Symptom: the Status tab says `stopped` while the launcher is running.
 Check the `state_source` shown when hovering the State badge, then:
 
@@ -259,7 +272,21 @@ script:
 | `PICOCLAW_VERBOSITY` | 0..3                                   |
 | `PICOCLAW_CONFIG`    | path to UCI config (`/etc/config/picoclaw`) |
 | `PICOCLAW_LOGFILE`   | log file path                          |
-| `PICOCLAW_DOCROOT`   | docroot used by the placeholder's uhttpd (default `/var/lib/picoclaw-placeholder`) |
+| `PICOCLAW_DOCROOT`   | docroot used by the fallback's uhttpd (default `/var/lib/picoclaw-placeholder`) |
+
+Extra command line arguments are configured with the UCI option
+`picoclaw.webui.args` (LuCI: *Configuration -> Extra arguments*).  It defaults
+to `-no-browser -public`, which is what `picoclaw-launcher` needs in order to
+listen on the LAN address - without `-public` it binds `127.0.0.1` only and
+the WebUI is unreachable from other hosts.  The value is split on whitespace
+and passed as separate `argv` words (no shell, no quoting); clear the field
+for launchers that do not know these flags::
+
+```sh
+uci set picoclaw.webui.args='-no-browser -public'
+uci commit picoclaw
+/etc/init.d/picoclaw-webui restart
+```
 
 It must also run as a **foreground** process: procd supervises the pid it
 started and treats any exit as a crash.  A launcher that forks into the

@@ -76,6 +76,10 @@ const FIELD_VALIDATORS = {
 	port:      (v) => { const n = +v; return n == n && n >= 1 && n <= 65535; },
 	log_alt:   (v) => (v == '' || v == 'syslog' || v == LOG_PATH),
 	verbosity: (v) => { const n = +v; return n == n && n >= 0 && n <= 3; },
+	/* Extra launcher arguments.  They are handed to the launcher as separate
+	 * argv words (never via a shell); the conservative charset keeps the
+	 * option readable. */
+	args:      (v) => (v == '' || match(v, /^[A-Za-z0-9 ._%:@,+\/-]*$/) != null),
 };
 
 // ---------------------------------------------------------------------------
@@ -192,10 +196,14 @@ function proc_scan_pid() {
 	return null;
 }
 
-/* Look for a listening socket on `port` in /proc/net/tcp{,6} (state 0A). */
-function port_listening(port) {
+/* Inspect /proc/net/tcp{,6} for listening sockets on `port`.
+ * Returns two booleans: `open` (a listener exists on any address) and `lan`
+ * (at least one listener is bound to a non-loopback address, i.e. reachable
+ * from the LAN). */
+function port_state(port) {
 	const want = sprintf('%04X', port);
 	const paths = [ '/proc/net/tcp', '/proc/net/tcp6' ];
+	let open = false, lan = false;
 
 	for (let i = 0; i < length(paths); i++) {
 		try {
@@ -208,37 +216,49 @@ function port_listening(port) {
 
 			for (let j = 0; j < length(lines); j++) {
 				const m = match(lines[j],
-					/^[ \t]*[0-9]+:[ \t]*[0-9A-Fa-f]+:([0-9A-Fa-f]+)[ \t]+[^ \t]+[ \t]+([0-9A-Fa-f]+)/);
+					/^[ \t]*[0-9]+:[ \t]*([0-9A-Fa-f]+):([0-9A-Fa-f]+)[ \t]+[^ \t]+[ \t]+([0-9A-Fa-f]+)/);
 
-				if (m && m[2] == '0A' && uc(m[1]) == want)
-					return true;
+				if (!m || m[3] != '0A' || uc(m[2]) != want)
+					continue;
+
+				open = true;
+
+				/* 0.0.0.0 / :: or any explicit non-loopback address is
+				 * reachable; 127.0.0.0/8 ends in 7F and ::1 is
+				 * ...01000000. */
+				const is_any      = match(m[1], /^0+$/) != null;
+				const is_loopback = (length(m[1]) == 8 && uc(substr(m[1], -2)) == '7F')
+				                 || m[1] == '00000000000000000000000001000000';
+
+				if (is_any || !is_loopback)
+					lan = true;
 			}
 		}
 		catch (e) { }
 	}
 
-	return false;
+	return { open: open, lan: lan };
 }
 
 function service_state(port) {
 	/* Always probe the port: even when a pid is known the process may not be
 	 * serving (e.g. a launcher that binds 127.0.0.1 only, or one that is not
 	 * an HTTP server at all).  get_status reports it as `port_open`. */
-	const open = port_listening(port);
-	let pid = pidfile_pid();
+	const ps  = port_state(port);
+	let pid   = pidfile_pid();
 
 	if (pid != null)
-		return { running: true, pid: pid, source: 'pidfile', port_open: open };
+		return { running: true, pid: pid, source: 'pidfile', port_open: ps.open, port_lan: ps.lan };
 
 	pid = proc_scan_pid();
 
 	if (pid != null)
-		return { running: true, pid: pid, source: 'proc', port_open: open };
+		return { running: true, pid: pid, source: 'proc', port_open: ps.open, port_lan: ps.lan };
 
-	if (open)
-		return { running: true, pid: null, source: 'port', port_open: true };
+	if (ps.open)
+		return { running: true, pid: null, source: 'port', port_open: true, port_lan: ps.lan };
 
-	return { running: false, pid: null, source: 'none', port_open: false };
+	return { running: false, pid: null, source: 'none', port_open: false, port_lan: false };
 }
 
 /* Autostart == the /etc/rc.d/S* symlink created by `/etc/init.d/... enable`. */
@@ -384,6 +404,7 @@ const methods = {
 				pid:          state.pid,
 				port:         port,
 				port_open:    state.port_open,
+				port_lan:     state.port_lan,
 				autostart:    autostart_enabled(),
 				service:      SERVICE,
 				launcher:     launcher ? launcher.path : LAUNCHER,

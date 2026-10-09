@@ -4,3 +4,9 @@ config webui 'webui'
     option verbosity '1'
     # log_alt: '', '/var/log/picoclaw-webui.log' or 'syslog'
     option log_alt ''
+
+# Extra arguments for the launcher (whitespace separated, passed as separate
+# argv words - never through a shell).  picoclaw-launcher needs
+# `-no-browser -public` to serve on the LAN instead of 127.0.0.1 only.
+# Clear it for launchers that do not understand these flags.
+option args '-no-browser -public'

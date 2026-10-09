@@ -87,6 +87,7 @@
         backend_warn:     "<%:The rpcd object luci.picoclaw is unavailable, using the in-process backend instead%>",
         placeholder:      "<%:placeholder launcher, not the real picoclaw%>",
         port_closed:      "<%:not listening%>",
+        port_loopback:    "<%:loopback only, not reachable from the LAN%>",
         action_failed:    "<%:Action failed%>",
         action_ok:        "<%:Action '%s' succeeded%>",
         action_sending:   "<%:Sending action: %s%>"
@@ -195,11 +196,18 @@
         setTitle("ps-state", d.state_source ? ("state source: " + d.state_source) : "");
 
         setText("ps-pid", (d.pid != null) ? String(d.pid) : "—");
-        // Point out the confusing case: the process is up but nothing serves
-        // the configured port (launcher bound to 127.0.0.1, wrong port, or
-        // not an HTTP server at all).
-        setText("ps-port", ((d.port != null) ? String(d.port) : "—")
-            + ((state.running && d.port_open === false) ? " (" + STR.port_closed + ")" : ""));
+        // Point out the two confusing cases while the service is reported as
+        // running: nothing listens on the configured port at all, or it only
+        // listens on the loopback address (browsers on the LAN get
+        // "connection refused").
+        var portNote = "";
+
+        if (state.running) {
+            if (d.port_open === false) portNote = " (" + STR.port_closed + ")";
+            else if (d.port_lan === false) portNote = " (" + STR.port_loopback + ")";
+        }
+
+        setText("ps-port", ((d.port != null) ? String(d.port) : "—") + portNote);
         setHTML("ps-autostart", state.autostart
             ? '<span class="badge badge-info">' + STR.autostart_on + '</span>'
             : '<span class="badge badge-neutral">' + STR.autostart_off + '</span>');

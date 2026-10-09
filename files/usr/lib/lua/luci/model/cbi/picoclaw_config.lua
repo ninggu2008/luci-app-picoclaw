@@ -74,6 +74,17 @@ o.datatype    = "port"
 o.rmempty     = false
 o.description = _("TCP port the launcher binds. Must be 1..65535.")
 
+-- Extra launcher arguments.  picoclaw-launcher binds 127.0.0.1 only unless it
+-- is started with -public, which makes the WebUI unreachable from the LAN.
+o = s:option(Value, "args", _("Extra arguments"))
+o.default     = "-no-browser -public"
+o.rmempty     = true
+o.description = _("Passed to the launcher as separate arguments (split on "
+    .. "spaces, no shell quoting). picoclaw-launcher needs "
+    .. "`-no-browser -public` to listen on the LAN address instead of "
+    .. "127.0.0.1; clear this field for launchers that do not know these "
+    .. "flags.")
+
 -- Log destination
 o = s:option(ListValue, "log_alt", _("Log destination"))
 o.default     = ""

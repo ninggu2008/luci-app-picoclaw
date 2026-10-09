@@ -123,6 +123,7 @@ local ALLOWED_CONFIG_FIELDS = {
     port      = true,
     log_alt   = true,
     verbosity = true,
+    args      = true,
 }
 
 local function write_json(tbl, status)

@@ -101,9 +101,14 @@ Both implementations of `luci.picoclaw` (the ucode rpcd plugin and
   `action` drawn from a literal whitelist
   (`start`, `stop`, `restart`, `enable`, `disable`).
 * `set_config` writes only to section `picoclaw.webui`, only fields with
-  a validator (`enabled`, `port`, `log_alt`, `verbosity`), and each value
-  must pass that validator (port 1..65535, log path from a fixed set,
+  a validator (`enabled`, `port`, `args`, `log_alt`, `verbosity`), and each
+  value must pass that validator (port 1..65535, log path from a fixed set,
   ...). `log_alt` can never select an arbitrary file to read.
+* The `args` option holds extra launcher arguments.  They are split on
+  whitespace and handed to the launcher as separate `argv` words - never
+  interpolated into shell code - so no shell metacharacter in the option is
+  ever interpreted (the validator also restricts it to a readable character
+  set).  Globbing is disabled around the expansion (`set -f`).
 * `get_logs` reads from one of two compile-time constant paths
   (`/var/log/picoclaw-webui.log`, `/var/log/messages`).
 * All filesystem paths are constants; nothing user supplied is opened.

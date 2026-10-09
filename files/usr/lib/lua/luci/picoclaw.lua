@@ -81,6 +81,12 @@ local FIELD_VALIDATORS = {
 		local n = tonumber(v)
 		return n ~= nil and n >= 0 and n <= 3
 	end,
+	-- Extra launcher arguments.  They are passed as separate argv words and
+	-- never through a shell, so shell metacharacters are not dangerous - they
+	-- are rejected anyway to keep the option to something readable.
+	args = function(v)
+		return v == "" or v:match("^[%w%s%._%-%/=:@,%+]+$") ~= nil
+	end,
 }
 
 -- ---------------------------------------------------------------------------
@@ -191,20 +197,36 @@ local function proc_scan_pid()
 	return nil
 end
 
--- Look for a listening socket on `port` in /proc/net/tcp{,6} (state 0A).
-local function port_listening(port)
+-- Inspect /proc/net/tcp{,6} for listening sockets on `port`.
+-- Returns two booleans:
+--   open - at least one listener exists (any address),
+--   lan  - at least one of them is bound to a non-loopback address, i.e. the
+--          WebUI is reachable from the LAN and not just from the router.
+local function port_state(port)
 	local want = string.format("%04X", port)
+	local open, lan = false, false
 
 	for _, path in ipairs({ "/proc/net/tcp", "/proc/net/tcp6" }) do
 		local f = io.open(path, "r")
 
 		if f then
 			for line in f:lines() do
-				local lport, state = line:match("^%s*%d+:%s*[0-9A-Fa-f]+:(%x+)%s+%S+%s+(%x+)")
+				local addr, lport, state =
+					line:match("^%s*%d+:%s*([0-9A-Fa-f]+):(%x+)%s+%S+%s+(%x+)")
 
 				if lport and state == "0A" and lport:upper() == want then
-					f:close()
-					return true
+					open = true
+
+					-- 0.0.0.0 / :: (all zero) or any explicit non-loopback
+					-- address counts as reachable; 127.0.0.0/8 ends in 7F
+					-- and ::1 is the last word being 1.
+					local is_any      = addr:match("^0+$") ~= nil
+					local is_loopback = (#addr == 8 and addr:sub(-2) == "7F")
+					                 or (addr == "00000000000000000000000001000000")
+
+					if is_any or not is_loopback then
+						lan = true
+					end
 				end
 			end
 
@@ -212,31 +234,31 @@ local function port_listening(port)
 		end
 	end
 
-	return false
+	return open, lan
 end
 
 local function service_state(port)
 	-- Always probe the port: even when a pid is known the process may not be
 	-- serving (e.g. a launcher that binds 127.0.0.1 only, or one that is not
 	-- an HTTP server at all).  get_status reports it as `port_open`.
-	local open = port_listening(port)
-	local pid  = pidfile_pid()
+	local open, lan = port_state(port)
+	local pid       = pidfile_pid()
 
 	if pid then
-		return { running = true, pid = pid, source = "pidfile", port_open = open }
+		return { running = true, pid = pid, source = "pidfile", port_open = open, port_lan = lan }
 	end
 
 	pid = proc_scan_pid()
 
 	if pid then
-		return { running = true, pid = pid, source = "proc", port_open = open }
+		return { running = true, pid = pid, source = "proc", port_open = open, port_lan = lan }
 	end
 
 	if open then
-		return { running = true, pid = nil, source = "port", port_open = true }
+		return { running = true, pid = nil, source = "port", port_open = true, port_lan = lan }
 	end
 
-	return { running = false, pid = nil, source = "none", port_open = false }
+	return { running = false, pid = nil, source = "none", port_open = false, port_lan = false }
 end
 
 -- Autostart == the /etc/rc.d/S* symlink created by
@@ -381,6 +403,7 @@ function M.get_status()
 		pid          = state.pid,
 		port         = port,
 		port_open    = state.port_open,
+		port_lan     = state.port_lan,
 		autostart    = autostart_enabled(),
 		service      = SERVICE,
 		launcher     = launcher or LAUNCHER,
