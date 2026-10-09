@@ -50,10 +50,15 @@
 //    status response down.
 
 // Best-effort load probe. rpcd-mod-ucode scans /usr/share/rpcd/ucode
-// at startup; this line lands in syslog the moment our file is
-// compiled, so we can tell "never loaded" from "loaded but a
-// method call failed".
-try { system("logger -t rpcd-picoclaw 'luci.picoclaw.uc: module loaded at startup'"); } catch (e) {}
+// at startup; this line writes a file the moment our module is
+// compiled so we can tell "never loaded" from "loaded but a
+// method call failed". We use fs.writefile() rather than system()
+// because rpcd-mod-ucode's ucode runtime only mounts fs/ubus/uci -
+// a bare system() call would just hit `try` here and silently fail.
+try {
+    fs.writefile("/tmp/luci.picoclaw.loaded",
+        "loaded at " + time() + " pid=" + (fs.stat("/proc/self") ? "?" : "?") + "\n");
+} catch (e) {}
 
 const SERVICE  = "picoclaw-webui";
 const LAUNCHER = "/opt/picoclaw/picoclaw-launcher";
