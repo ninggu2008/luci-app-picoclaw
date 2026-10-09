@@ -1,24 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build luci-app-picoclaw .ipk for several ImmortalWRT / OpenWrt targets.
+# Build luci-app-picoclaw IPK using plain bash + tar (no SDK, no Docker).
 #
-# Triggers:
-#   * push to main           -> builds + uploads artifact
-#   * tag v*                 -> builds + attaches .ipk to a GitHub Release
-#   * pull_request           -> builds (verification only)
-#   * workflow_dispatch      -> manual build (full matrix)
+# The package is architecture-independent (pure Lua + init shell script +
+# placeholder launcher), so we ship a single `Architecture: all` IPK
+# rather than running the full OpenWrt SDK. This trades off:
+#     - we don't validate the Makefile against a real buildroot, but
+#     - we don't need to pull ~600 MB of Docker image per matrix entry,
+#       and there's no per-arch image-availability problem.
 #
-# Why we don't use openwrt/gh-action-sdk:
-#   That action's Dockerfile hardcodes `FROM openwrtorg/sdk:$ARCH`
-#   without a release version, so it fails for tagged releases like
-#   `21.02.7` and for non-x86_64 arches. We pull the SDK directly via
-#   `container:` and pull `immortalwrt/sdk:<release>-<arch>`.
+# Layout (must exist under files/):
+#   files/etc/config/picoclaw
+#   files/etc/init.d/picoclaw-webui               (executable in package)
+#   files/opt/picoclaw/picoclaw-launcher          (executable in package)
+#   files/usr/lib/lua/luci/controller/picoclaw.lua
+#   files/usr/lib/lua/luci/model/cbi/picoclaw_config.lua
+#   files/usr/lib/lua/luci/view/picoclaw/status.htm
+#   files/usr/lib/lua/luci/view/picoclaw/logs.htm
+#   files/usr/lib/rpcd/luci.picoclaw
+#   files/usr/share/rpcd/acl.d/40-picoclaw.json
 
 name: Build IPK
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - master
     tags:
       - "v*"
   pull_request:
@@ -27,128 +35,369 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  # ---------------------------------------------------------------------
-  # Build matrix
-  # ---------------------------------------------------------------------
   build:
-    name: "${{ matrix.release }} / ${{ matrix.arch }}"
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - release: 21.02.7
-            arch: x86_64
-          - release: 21.02.7
-            arch: aarch64_cortex-a53
-          - release: 21.02.7
-            arch: mipsel_24kc
-          - release: 21.02.7
-            arch: arm_cortex-a7_neon-vfpv4
-          - release: 19.07.10
-            arch: x86_64
-
-    container:
-      image: immortalwrt/sdk:${{ matrix.release }}-${{ matrix.arch }}
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Locate SDK buildroot inside container
-        id: locate
+      - name: Build architecture-independent IPK
+        shell: bash
         run: |
-          for d in /sdk /openwrt /openwrt_sdk /buildroot; do
-            if [ -f "$d/feeds.conf.default" ]; then
-              echo "Found SDK buildroot at $d"
-              echo "buildroot=$d" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "ERROR: SDK buildroot not found. Top-level dirs:" >&2
-          ls / >&2
-          exit 1
+          set -Eeuo pipefail
 
-      - name: Register local feed and build
-        working-directory: ${{ steps.locate.outputs.buildroot }}
-        run: |
-          set -euo pipefail
+          PKG="luci-app-picoclaw"
+          VERSION="1.0.0"
+          RELEASE="1"
 
-          # Register this checkout as a feed named `luci-picoclaw`.
-          echo "src-link luci-picoclaw $GITHUB_WORKSPACE" >> feeds.conf.default
+          WORK="$RUNNER_TEMP/ipk"
+          OUT="$GITHUB_WORKSPACE/dist"
+          IPK="$OUT/${PKG}_${VERSION}-${RELEASE}_all.ipk"
 
-          # Refresh feeds and install our package (+ dependencies declared
-          # by the Makefile, which are all in the stock ImmortalWRT feeds).
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a -p luci-picoclaw
+          echo "======================================"
+          echo "Building $PKG"
+          echo "Version: ${VERSION}-${RELEASE}"
+          echo "Architecture: all"
+          echo "======================================"
 
-          # Pin the package in defconfig. We don't run `make menuconfig`,
-          # so this avoids relying on TUI defaults.
-          echo "CONFIG_PACKAGE_luci-app-picoclaw=m" >> .config
-          make defconfig
+          # ------------------------------------------------------------
+          # Locate source files
+          # ------------------------------------------------------------
 
-          # Build only this package (no full world build, no signing).
-          make package/luci-app-picoclaw/compile V=s -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-
-      - name: Tail build log on failure
-        if: failure()
-        run: |
-          if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
-            echo "--- last 80 lines of build.log ---"
-            tail -n 80 "$GITHUB_WORKSPACE/build.log"
-          fi
-
-      - name: Locate built .ipk
-        id: ipk
-        working-directory: ${{ steps.locate.outputs.buildroot }}
-        run: |
-          shopt -s globstar nullglob
-          ipk=( bin/packages/*/luci/luci-app-picoclaw_*.ipk )
-          if [ ${#ipk[@]} -eq 0 ] || [ ! -f "${ipk[0]}" ]; then
-            echo "ERROR: luci-app-picoclaw_*.ipk not found under bin/packages/"
-            find bin/packages -type d -print
+          if [ -d "$GITHUB_WORKSPACE/files" ]; then
+            SRC="$GITHUB_WORKSPACE/files"
+          else
+            echo "::error::Cannot find files/ directory."
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type d \
+              -not -path '*/.git*' -not -path '*/.github*' | sort
             exit 1
           fi
-          echo "Built: ${ipk[0]}"
-          echo "ipk_path=${ipk[0]}" >> "$GITHUB_OUTPUT"
+
+          echo "Source directory:"
+          echo "$SRC"
+
+          # ------------------------------------------------------------
+          # Check required files
+          # ------------------------------------------------------------
+
+          REQUIRED_FILES=(
+            "etc/config/picoclaw"
+            "etc/init.d/picoclaw-webui"
+            "opt/picoclaw/picoclaw-launcher"
+            "usr/lib/lua/luci/controller/picoclaw.lua"
+            "usr/lib/lua/luci/model/cbi/picoclaw_config.lua"
+            "usr/lib/lua/luci/view/picoclaw/status.htm"
+            "usr/lib/lua/luci/view/picoclaw/logs.htm"
+            "usr/lib/rpcd/luci.picoclaw"
+            "usr/share/rpcd/acl.d/40-picoclaw.json"
+          )
+
+          MISSING=0
+
+          echo ""
+          echo "===== Check required files ====="
+
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$SRC/$f" ]; then
+              echo "[OK] $f"
+            else
+              echo "::error::Missing file: $SRC/$f"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" -ne 0 ]; then
+            echo ""
+            echo "===== Actual source files ====="
+            find "$SRC" -type f | sort
+            exit 1
+          fi
+
+          # ------------------------------------------------------------
+          # Prepare package directory
+          # ------------------------------------------------------------
+
+          rm -rf "$WORK" "$OUT"
+
+          mkdir -p \
+            "$WORK/control" \
+            "$WORK/data" \
+            "$OUT"
+
+          # Copy all package payload files.
+          cp -a "$SRC/." "$WORK/data/"
+
+          # OpenWrt init scripts and the launcher must be executable.
+          chmod 0755 "$WORK/data/etc/init.d/picoclaw-webui"
+          chmod 0755 "$WORK/data/opt/picoclaw/picoclaw-launcher"
+
+          # ------------------------------------------------------------
+          # Create control metadata
+          # ------------------------------------------------------------
+
+          cat > "$WORK/control/control" <<EOF
+          Package: ${PKG}
+          Version: ${VERSION}-${RELEASE}
+          Architecture: all
+          Maintainer: picoclaw maintainers <noreply@example.invalid>
+          Section: luci
+          Category: LuCI
+          Priority: optional
+          License: Apache-2.0
+          Depends: luci-base, rpcd, cgi-io
+          Description: LuCI web interface for picoclaw-webui
+           Live status, start / stop / restart, autostart toggle and a logs
+           viewer for the picoclaw launcher at /opt/picoclaw/picoclaw-launcher
+           (default port 18800). All actions go through the ACL-restricted
+           rpcd object luci.picoclaw; no arbitrary command execution is
+           exposed.
+          EOF
+
+          # Remove indentation introduced by the heredoc.
+          sed -i 's/^[[:space:]]*//' "$WORK/control/control"
+
+          # Preserve UCI configuration during package upgrades/removal.
+          printf '%s\n' \
+            '/etc/config/picoclaw' \
+            > "$WORK/control/conffiles"
+
+          # ------------------------------------------------------------
+          # Calculate installed size
+          # ------------------------------------------------------------
+
+          INSTALLED_SIZE=$(du -sk "$WORK/data" | awk '{print $1}')
+
+          echo "Installed size: ${INSTALLED_SIZE} KB"
+
+          printf '%s\n' \
+            "Installed-Size: ${INSTALLED_SIZE}" \
+            >> "$WORK/control/control"
+
+          # ------------------------------------------------------------
+          # Create control.tar.gz
+          # ------------------------------------------------------------
+
+          echo ""
+          echo "===== Create control.tar.gz ====="
+
+          (
+            cd "$WORK/control"
+
+            tar \
+              --format=gnu \
+              --numeric-owner \
+              --owner=0 \
+              --group=0 \
+              --sort=name \
+              -czf "$WORK/control.tar.gz" \
+              .
+          )
+
+          # ------------------------------------------------------------
+          # Create data.tar.gz
+          # ------------------------------------------------------------
+
+          echo "===== Create data.tar.gz ====="
+
+          (
+            cd "$WORK/data"
+
+            tar \
+              --format=gnu \
+              --numeric-owner \
+              --owner=0 \
+              --group=0 \
+              --sort=name \
+              -czf "$WORK/data.tar.gz" \
+              .
+          )
+
+          # Validate gzip archives.
+          gzip -t "$WORK/control.tar.gz"
+          gzip -t "$WORK/data.tar.gz"
+
+          # ------------------------------------------------------------
+          # Create debian-binary
+          # ------------------------------------------------------------
+
+          printf '2.0\n' > "$WORK/debian-binary"
+
+          # ------------------------------------------------------------
+          # Create OpenWrt IPK
+          #
+          # OpenWrt IPK format is NOT an ar archive. It is:
+          #
+          #   gzip( tar( ./debian-binary ./data.tar.gz ./control.tar.gz ) )
+          #
+          # ------------------------------------------------------------
+
+          echo "===== Create IPK ====="
+
+          (
+            cd "$WORK"
+
+            tar \
+              --format=gnu \
+              --numeric-owner \
+              --owner=0 \
+              --group=0 \
+              --sort=name \
+              -czf "$IPK" \
+              ./debian-binary \
+              ./data.tar.gz \
+              ./control.tar.gz
+          )
+
+          # ------------------------------------------------------------
+          # Validate outer IPK
+          # ------------------------------------------------------------
+
+          echo ""
+          echo "===== Validate IPK ====="
+
+          test -s "$IPK"
+
+          echo "File type:"
+          file "$IPK"
+
+          echo ""
+          echo "IPK size:"
+          ls -lh "$IPK"
+
+          echo ""
+          echo "Outer archive contents:"
+
+          tar -tzf "$IPK"
+
+          # Verify required outer members exist.
+          tar -tzf "$IPK" | grep -Fxq "./debian-binary"
+          tar -tzf "$IPK" | grep -Fxq "./data.tar.gz"
+          tar -tzf "$IPK" | grep -Fxq "./control.tar.gz"
+
+          # ------------------------------------------------------------
+          # Extract outer IPK and validate its components
+          # ------------------------------------------------------------
+
+          VERIFY="$WORK/verify"
+          rm -rf "$VERIFY"
+          mkdir -p "$VERIFY"
+
+          tar -xzf "$IPK" -C "$VERIFY"
+
+          # Verify debian-binary contents.
+          test "$(tr -d '\r\n' < "$VERIFY/debian-binary")" = "2.0"
+
+          # Verify inner gzip files.
+          gzip -t "$VERIFY/control.tar.gz"
+          gzip -t "$VERIFY/data.tar.gz"
+
+          # ------------------------------------------------------------
+          # Validate control archive
+          # ------------------------------------------------------------
+
+          mkdir -p "$VERIFY/control"
+
+          tar \
+            -xzf "$VERIFY/control.tar.gz" \
+            -C "$VERIFY/control"
+
+          echo ""
+          echo "===== Control metadata ====="
+
+          cat "$VERIFY/control/control"
+
+          echo ""
+
+          grep -Fxq "Package: ${PKG}" \
+            "$VERIFY/control/control"
+
+          grep -Fxq "Version: ${VERSION}-${RELEASE}" \
+            "$VERIFY/control/control"
+
+          grep -Fxq "Architecture: all" \
+            "$VERIFY/control/control"
+
+          grep -Fxq "/etc/config/picoclaw" \
+            "$VERIFY/control/conffiles"
+
+          # ------------------------------------------------------------
+          # Validate data archive
+          # ------------------------------------------------------------
+
+          mkdir -p "$VERIFY/data"
+
+          tar \
+            -xzf "$VERIFY/data.tar.gz" \
+            -C "$VERIFY/data"
+
+          echo ""
+          echo "===== Validate installed files ====="
+
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$VERIFY/data/$f" ]; then
+              echo "[OK] $f"
+            else
+              echo "::error::Missing packaged file: $f"
+              exit 1
+            fi
+          done
+
+          # Verify executable modes on scripts.
+          for s in \
+            "$VERIFY/data/etc/init.d/picoclaw-webui" \
+            "$VERIFY/data/opt/picoclaw/picoclaw-launcher"; do
+            mode=$(stat -c '%a' "$s")
+            echo "  $(basename "$s") mode: $mode"
+            test "$mode" = "755"
+          done
+
+          # ------------------------------------------------------------
+          # Final information
+          # ------------------------------------------------------------
+
+          echo ""
+          echo "======================================"
+          echo "IPK BUILD SUCCESSFUL"
+          echo "======================================"
+
+          echo ""
+          echo "Output file:"
+          echo "$IPK"
+
+          echo ""
+          echo "File information:"
+          file "$IPK"
+
+          echo ""
+          echo "Archive contents:"
+          tar -tzf "$IPK"
 
       - name: Upload IPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-picoclaw-${{ matrix.release }}-${{ matrix.arch }}
-          path: ${{ steps.locate.outputs.buildroot }}/${{ steps.ipk.outputs.ipk_path }}
+          name: luci-app-picoclaw-all-ipk
+          path: dist/luci-app-picoclaw_1.0.0-1_all.ipk
           if-no-files-found: error
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ matrix.release }}-${{ matrix.arch }}
-          path: ${{ github.workspace }}/build.log
-          if-no-files-found: ignore
+          retention-days: 30
 
   # ---------------------------------------------------------------------
-  # Aggregate: on tag push, collect all .ipk artifacts and create
-  # a GitHub Release.
+  # Aggregate: on tag push, attach the IPK to a GitHub Release.
   # ---------------------------------------------------------------------
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Download all .ipk artifacts
+      - name: Download IPK artifact
         uses: actions/download-artifact@v4
         with:
+          name: luci-app-picoclaw-all-ipk
           path: dist
-          merge-all: false
 
       - name: List collected artifacts
         run: |
