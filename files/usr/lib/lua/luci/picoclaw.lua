@@ -39,11 +39,13 @@ local M = { }
 
 M.SERVICE  = "picoclaw-webui"
 M.LAUNCHER = "/opt/picoclaw/picoclaw-launcher"
+M.PLACEHOLDER = "/usr/libexec/picoclaw-launcher-placeholder"
 M.PIDFILE  = "/var/run/picoclaw-webui.pid"
 M.LOG_PATH = "/var/log/picoclaw-webui.log"
 
-local SERVICE  = M.SERVICE
-local LAUNCHER = M.LAUNCHER
+local SERVICE     = M.SERVICE
+local LAUNCHER    = M.LAUNCHER
+local PLACEHOLDER = M.PLACEHOLDER
 local PIDFILE  = M.PIDFILE
 local LOG_PATH = M.LOG_PATH
 local SYSLOG   = "/var/log/messages"
@@ -96,6 +98,21 @@ local function uci_get(option, fallback)
 	end
 
 	return fallback
+end
+
+-- The launcher actually in use: the real one (owned by the picoclaw-webui
+-- package) when it is executable, the fallback shipped by this package
+-- otherwise.  Mirrors resolve_launcher() in /etc/init.d/picoclaw-webui.
+local function resolve_launcher()
+	if fs.access(LAUNCHER, "x") then
+		return LAUNCHER, false
+	end
+
+	if fs.access(PLACEHOLDER, "x") then
+		return PLACEHOLDER, true
+	end
+
+	return nil, false
 end
 
 local function get_port()
@@ -162,7 +179,9 @@ local function proc_scan_pid()
 				local cmd = f:read(256) or ""
 				f:close()
 
-				if cmd:find(LAUNCHER, 1, true) then
+				-- Either the real launcher or the bundled fallback
+				-- counts as "the service is running".
+				if cmd:find(LAUNCHER, 1, true) or cmd:find(PLACEHOLDER, 1, true) then
 					return pid
 				end
 			end
@@ -265,7 +284,13 @@ end
 
 -- Purely informational: scan the launcher for a version banner.
 local function launcher_version()
-	local head = fs.readfile(LAUNCHER)
+	local launcher = resolve_launcher()
+
+	if not launcher then
+		return nil
+	end
+
+	local head = fs.readfile(launcher)
 
 	if not head then
 		return nil
@@ -345,6 +370,7 @@ end
 function M.get_status()
 	local port = get_port()
 	local state = service_state(port)
+	local launcher, is_placeholder = resolve_launcher()
 
 	local out = {
 		running      = state.running,
@@ -352,7 +378,8 @@ function M.get_status()
 		port         = port,
 		autostart    = autostart_enabled(),
 		service      = SERVICE,
-		launcher     = LAUNCHER,
+		launcher     = launcher or LAUNCHER,
+		placeholder  = is_placeholder,
 		log_path     = get_log_path(),
 		state_source = state.source,
 	}
@@ -393,12 +420,16 @@ function M.set_action(action)
 
 	-- Fail early (with a useful message) instead of letting procd enter a
 	-- crash loop for a minute.
-	if (action == "start" or action == "restart") and not fs.access(LAUNCHER, "x") then
-		return {
-			ok      = false,
-			action  = action,
-			message = "launcher missing or not executable: " .. LAUNCHER,
-		}
+	if action == "start" or action == "restart" then
+		local launcher = resolve_launcher()
+
+		if not launcher then
+			return {
+				ok      = false,
+				action  = action,
+				message = "no launcher found (" .. LAUNCHER .. " or " .. PLACEHOLDER .. ")",
+			}
+		end
 	end
 
 	-- `action` is drawn from the literal ALLOWED_ACTIONS table above; the

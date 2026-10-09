@@ -49,7 +49,7 @@ luci-app-picoclaw/
 │   ├── etc/
 │   │   ├── config/picoclaw                       # UCI defaults
 │   │   └── init.d/picoclaw-webui                 # procd init script
-│   └── opt/picoclaw/picoclaw-launcher            # placeholder launcher
+│   └── usr/libexec/picoclaw-launcher-placeholder # fallback launcher
 └── po/
     └── zh-cn/picoclaw.po                         # zh-CN translations
 ```
@@ -99,7 +99,7 @@ ls bin/packages/<arch>/luci/luci-app-picoclaw_*.ipk
 
 ```sh
 curl -L -o /tmp/luci-app-picoclaw.ipk \
-    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-5_all.ipk
+    https://github.com/ninggu2008/luci-app-picoclaw/releases/latest/download/luci-app-picoclaw_1.0.0-6_all.ipk
 opkg install /tmp/luci-app-picoclaw.ipk
 
 # Or pick from the Actions workflow artifacts page:
@@ -140,12 +140,14 @@ uci commit picoclaw
 /etc/init.d/picoclaw-webui enable     # keeps the flag and the rc.d symlink in sync
 ```
 
-The launcher exposes its version banner in
-`/opt/picoclaw/picoclaw-launcher`; the placeholder shipped with this
-package responds on TCP/18800 with a self-identifying page so the UI
-"Open WebUI" link is functional out of the box. Replace
-`/opt/picoclaw/picoclaw-launcher` with the real picoclaw launcher to
-deploy the full feature set.
+The real launcher lives at `/opt/picoclaw/picoclaw-launcher` and is owned
+by the `picoclaw-webui` package (or installed by hand) - **this package
+never installs anything into `/opt/picoclaw/`**, so the two cannot
+conflict in opkg.  While that file is missing, the init script falls back
+to the bundled `/usr/libexec/picoclaw-launcher-placeholder`, which serves a
+self-identifying page on TCP/18800 so the "Open WebUI" link works on a
+fresh install.  The Status page marks the launcher row with
+`(placeholder launcher, not the real picoclaw)` in that case.
 
 ## License
 

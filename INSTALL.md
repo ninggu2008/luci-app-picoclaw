@@ -54,7 +54,7 @@ Drop the `files/` tree into the router filesystem:
 ```sh
 scp -r files/* root@router:/
 ssh root@router
-chmod +x /etc/init.d/picoclaw-webui /opt/picoclaw/picoclaw-launcher
+chmod +x /etc/init.d/picoclaw-webui /usr/libexec/picoclaw-launcher-placeholder
 /etc/init.d/rpcd reload
 rm -f /tmp/luci-indexcache.*
 rm -rf /tmp/luci-modulecache/
@@ -90,7 +90,8 @@ ls /usr/share/rpcd/ucode/luci.picoclaw.uc
 ls /usr/share/rpcd/acl.d/40-picoclaw.json
 ls /etc/init.d/picoclaw-webui
 ls /etc/config/picoclaw
-ls -l /opt/picoclaw/picoclaw-launcher
+ls -l /usr/libexec/picoclaw-launcher-placeholder   # fallback (this package)
+ls -l /opt/picoclaw/picoclaw-launcher              # real launcher (picoclaw-webui) - optional
 ```
 
 Note: there is intentionally **no** file in `/usr/lib/rpcd/` — rpcd treats
@@ -142,7 +143,9 @@ what the flag says.
 procd only gained the `pidfile` instance parameter *after* the 24.10.x
 releases (it landed in 2026-03), so the init script writes the pidfile
 itself: the instance command is
-`/bin/sh -c 'echo $$ > /var/run/picoclaw-webui.pid; exec /opt/picoclaw/picoclaw-launcher'`
+`/bin/sh -c 'echo $$ > /var/run/picoclaw-webui.pid; exec <launcher>'`, where
+`<launcher>` is `/opt/picoclaw/picoclaw-launcher` when it is executable and
+`/usr/libexec/picoclaw-launcher-placeholder` otherwise
 and `exec` keeps the pid valid.
 
 The Status page combines three signals, in this order, and reports which
@@ -151,13 +154,13 @@ one matched in `state_source` (hover the State badge):
 | `state_source` | Signal |
 | -------------- | ------ |
 | `pidfile` | `/var/run/picoclaw-webui.pid` exists and `/proc/<pid>` is alive |
-| `proc` | a process whose `/proc/<pid>/cmdline` mentions `/opt/picoclaw/picoclaw-launcher` |
+| `proc` | a process whose `/proc/<pid>/cmdline` mentions either launcher path |
 | `port` | the configured TCP port is in LISTEN state in `/proc/net/tcp{,6}` |
 | `none` | none of the above → reported as stopped |
 
 This means the page also reports the correct state when the launcher was
 started by hand (not through `/etc/init.d/`), or when it replaced itself
-with another binary (the shipped placeholder `exec`s `uhttpd`).
+with another binary (the bundled fallback `exec`s `uhttpd`).
 
 ### 3.4 LuCI
 
@@ -211,7 +214,7 @@ like (see section 5):
 ```sh
 logread | grep picoclaw-webui        # "in a crash loop" / launcher errors
 tail -20 /var/log/picoclaw-webui.log
-ps w | grep -F /opt/picoclaw/picoclaw-launcher
+ps w | grep -F -e /opt/picoclaw/picoclaw-launcher -e /usr/libexec/picoclaw-launcher-placeholder
 ```
 
 Note that `procd` restarts a crashing instance every 5 seconds for up to
@@ -226,18 +229,26 @@ opkg remove luci-app-picoclaw
 /etc/init.d/picoclaw-webui stop
 ```
 
-## 5. Real launcher overlay
+## 5. Real launcher
 
-The package ships a *placeholder* launcher at
-`/opt/picoclaw/picoclaw-launcher`. To replace it with the real
-picoclaw launcher (provided by the `picoclaw-webui` package or your own
-script), drop the file into place with the same path and ensure it is
-executable:
+The real launcher simply lives at `/opt/picoclaw/picoclaw-launcher`; this
+LuCI package reserves that path for the `picoclaw-webui` package (or your
+own script) and installs nothing there, so both packages can be installed
+side by side without an opkg file conflict.
 
 ```sh
+# install the real launcher
 chmod +x /opt/picoclaw/picoclaw-launcher
 /etc/init.d/picoclaw-webui restart
+
+# the Status page then shows it in the Launcher row, without the
+# "(placeholder launcher, not the real picoclaw)" hint
 ```
+
+Until that file exists the init script runs the fallback shipped by this
+package, `/usr/libexec/picoclaw-launcher-placeholder`, which serves a
+self-identifying page on TCP/18800 so the "Open WebUI" button in the Status
+page is functional right after installation.
 
 The real launcher must respect the following env vars set by the init
 script:

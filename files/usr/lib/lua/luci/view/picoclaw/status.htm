@@ -85,6 +85,7 @@
         backend_rpcd:     "<%:rpcd (luci.picoclaw)%>",
         backend_local:    "<%:in-process fallback%>",
         backend_warn:     "<%:The rpcd object luci.picoclaw is unavailable, using the in-process backend instead%>",
+        placeholder:      "<%:placeholder launcher, not the real picoclaw%>",
         action_failed:    "<%:Action failed%>",
         action_ok:        "<%:Action '%s' succeeded%>",
         action_sending:   "<%:Sending action: %s%>"
@@ -198,7 +199,8 @@
             ? '<span class="badge badge-info">' + STR.autostart_on + '</span>'
             : '<span class="badge badge-neutral">' + STR.autostart_off + '</span>');
         setText("ps-uptime", fmtUptime(d.uptime_s));
-        setText("ps-launcher", d.launcher || "—");
+        setText("ps-launcher", (d.launcher || "—")
+            + (d.placeholder ? " (" + STR.placeholder + ")" : ""));
         setText("ps-version", d.version || "—");
         setText("ps-log", d.log_path || "—");
 

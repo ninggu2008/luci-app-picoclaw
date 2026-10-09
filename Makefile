@@ -14,7 +14,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-picoclaw
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_MAINTAINER:=picoclaw maintainers <noreply@example.invalid>
 PKG_LICENSE:=Apache-2.0
@@ -134,14 +134,16 @@ define Package/luci-app-picoclaw/install
         ./files/etc/init.d/picoclaw-webui \
         $(1)/etc/init.d/picoclaw-webui
 
-    # ----- /opt/picoclaw/picoclaw-launcher (placeholder, see SECURITY.md) -----
-    # The package ships a *test* launcher so the UI is fully functional
-    # out of the box. Real picoclaw deployments are expected to overlay
-    # this file via the picoclaw-webui package.
-    $(INSTALL_DIR) $(1)/opt/picoclaw
+    # ----- fallback launcher -----
+    # /opt/picoclaw/picoclaw-launcher is reserved for the real launcher
+    # (owned by the picoclaw-webui package) - this package must not install
+    # anything there or opkg reports a file conflict.  The bundled fallback
+    # keeps the WebUI link functional on a fresh install; the init script
+    # prefers the real launcher whenever it exists.
+    $(INSTALL_DIR) $(1)/usr/libexec
     $(INSTALL_BIN) \
-        ./files/opt/picoclaw/picoclaw-launcher \
-        $(1)/opt/picoclaw/picoclaw-launcher
+        ./files/usr/libexec/picoclaw-launcher-placeholder \
+        $(1)/usr/libexec/picoclaw-launcher-placeholder
 endef
 
 # Drop the LuCI index caches (otherwise the new menu entry and views are

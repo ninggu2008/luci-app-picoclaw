@@ -12,7 +12,7 @@
 # Layout (must exist under files/):
 #   files/etc/config/picoclaw
 #   files/etc/init.d/picoclaw-webui               (executable in package)
-#   files/opt/picoclaw/picoclaw-launcher          (executable in package)
+#   files/usr/libexec/picoclaw-launcher-placeholder (executable in package)
 #   files/usr/lib/lua/luci/picoclaw.lua           (in-process backend)
 #   files/usr/lib/lua/luci/controller/picoclaw.lua
 #   files/usr/lib/lua/luci/model/cbi/picoclaw_config.lua
@@ -50,7 +50,7 @@ jobs:
           set -Eeuo pipefail
 
           echo "===== shell syntax ====="
-          for f in files/etc/init.d/picoclaw-webui files/opt/picoclaw/picoclaw-launcher; do
+          for f in files/etc/init.d/picoclaw-webui files/usr/libexec/picoclaw-launcher-placeholder; do
             sh -n "$f"
             echo "[OK] $f"
           done
@@ -91,7 +91,7 @@ jobs:
 
           PKG="luci-app-picoclaw"
           VERSION="1.0.0"
-          RELEASE="5"
+          RELEASE="6"
 
           WORK="$RUNNER_TEMP/ipk"
           OUT="$GITHUB_WORKSPACE/dist"
@@ -126,7 +126,7 @@ jobs:
           REQUIRED_FILES=(
             "etc/config/picoclaw"
             "etc/init.d/picoclaw-webui"
-            "opt/picoclaw/picoclaw-launcher"
+            "usr/libexec/picoclaw-launcher-placeholder"
             "usr/lib/lua/luci/picoclaw.lua"
             "usr/lib/lua/luci/controller/picoclaw.lua"
             "usr/lib/lua/luci/model/cbi/picoclaw_config.lua"
@@ -171,9 +171,9 @@ jobs:
           # Copy all package payload files.
           cp -a "$SRC/." "$WORK/data/"
 
-          # OpenWrt init scripts and the launcher must be executable.
+          # OpenWrt init scripts and the fallback launcher must be executable.
           chmod 0755 "$WORK/data/etc/init.d/picoclaw-webui"
-          chmod 0755 "$WORK/data/opt/picoclaw/picoclaw-launcher"
+          chmod 0755 "$WORK/data/usr/libexec/picoclaw-launcher-placeholder"
 
           # ------------------------------------------------------------
           # Create control metadata
@@ -192,8 +192,10 @@ jobs:
           Description: LuCI web interface for picoclaw-webui
            Live status, start / stop / restart, autostart toggle and a logs
            viewer for the picoclaw launcher at /opt/picoclaw/picoclaw-launcher
-           (default port 18800). All actions are validated against a literal
-           whitelist; no arbitrary command execution is exposed.
+           (default port 18800); this package does not install anything into
+           /opt, a bundled fallback launcher is used until the real one is
+           present. All actions are validated against a literal whitelist; no
+           arbitrary command execution is exposed.
           EOF
 
           # Remove indentation introduced by the heredoc.
@@ -421,7 +423,7 @@ jobs:
           # Verify executable modes on scripts.
           for s in \
             "$VERIFY/data/etc/init.d/picoclaw-webui" \
-            "$VERIFY/data/opt/picoclaw/picoclaw-launcher"; do
+            "$VERIFY/data/usr/libexec/picoclaw-launcher-placeholder"; do
             mode=$(stat -c '%a' "$s")
             echo "  $(basename "$s") mode: $mode"
             test "$mode" = "755"
@@ -452,7 +454,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-picoclaw-all-ipk
-          path: dist/luci-app-picoclaw_1.0.0-5_all.ipk
+          path: dist/luci-app-picoclaw_1.0.0-6_all.ipk
           if-no-files-found: error
           retention-days: 30
 

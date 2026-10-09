@@ -28,7 +28,14 @@ START=99
 STOP=10
 
 NAME=picoclaw-webui
-PROG=/opt/picoclaw/picoclaw-launcher
+
+# The real launcher, owned by the picoclaw-webui package (this package must
+# never install a file here, otherwise opkg reports a conflict).  When it is
+# absent - freshly installed LuCI app, no picoclaw yet - the fallback shipped
+# by this package is used so the WebUI link is functional out of the box.
+LAUNCHER=/opt/picoclaw/picoclaw-launcher
+PLACEHOLDER=/usr/libexec/picoclaw-launcher-placeholder
+PROG="$LAUNCHER"
 
 # Liveness state. The pid is written by the instance wrapper below (procd
 # only gained the `pidfile` parameter after the 24.10.x releases) and the
@@ -46,6 +53,24 @@ uci_get() {
     _v=$(/sbin/uci -q get "picoclaw.webui.$1")
     [ -z "$_v" ] && _v="$2"
     printf '%s' "$_v"
+}
+
+# Print the launcher to run: the real one when it is usable, the bundled
+# fallback otherwise.  Keep this in sync with resolve_launcher() in
+# /usr/lib/lua/luci/picoclaw.lua and in the rpcd ucode plugin, which use the
+# same order for the "is the service running" /proc scan.
+resolve_launcher() {
+    if [ -x "$LAUNCHER" ]; then
+        printf '%s' "$LAUNCHER"
+        return 0
+    fi
+
+    if [ -x "$PLACEHOLDER" ]; then
+        printf '%s' "$PLACEHOLDER"
+        return 0
+    fi
+
+    return 1
 }
 
 log() {
@@ -97,14 +122,22 @@ ensure_logfile() {
 # ---------------------------------------------------------------------------
 
 start_service() {
-    local port verbosity
+    local port verbosity prog
 
     port=$(uci_get port 18800)
     verbosity=$(uci_get verbosity 1)
 
-    if [ ! -x "$PROG" ]; then
-        log "ERROR: launcher not found or not executable: $PROG"
+    prog=$(resolve_launcher)
+
+    if [ -z "$prog" ]; then
+        log "ERROR: no launcher found ($LAUNCHER, $PLACEHOLDER)"
         return 1
+    fi
+
+    PROG="$prog"
+
+    if [ "$PROG" = "$PLACEHOLDER" ]; then
+        log "using fallback launcher $PLACEHOLDER (install the real one at $LAUNCHER)"
     fi
 
     ensure_logfile
@@ -135,7 +168,7 @@ start_service() {
 
     procd_close_instance
 
-    log "instance started: port=$port verbosity=$verbosity"
+    log "instance started: launcher=$PROG port=$port verbosity=$verbosity"
 }
 
 service_triggers() {

@@ -50,8 +50,9 @@
 import { access, lsdir, open, readfile, stat } from 'fs';
 import { cursor } from 'uci';
 
-const SERVICE   = 'picoclaw-webui';
-const LAUNCHER  = '/opt/picoclaw/picoclaw-launcher';
+const SERVICE     = 'picoclaw-webui';
+const LAUNCHER    = '/opt/picoclaw/picoclaw-launcher';
+const PLACEHOLDER = '/usr/libexec/picoclaw-launcher-placeholder';
 const PIDFILE   = '/var/run/picoclaw-webui.pid';
 const LOG_PATH  = '/var/log/picoclaw-webui.log';
 const SYSLOG    = '/var/log/messages';
@@ -93,6 +94,25 @@ function read_opt(option, fallback) {
 	catch (e) { }
 
 	return fallback;
+}
+
+/* The launcher actually in use: the real one (owned by the picoclaw-webui
+ * package) when it is executable, the fallback shipped by this package
+ * otherwise.  Mirrors resolve_launcher() in /etc/init.d/picoclaw-webui. */
+function resolve_launcher() {
+	try {
+		if (access(LAUNCHER, 'x'))
+			return { path: LAUNCHER, placeholder: false };
+	}
+	catch (e) { }
+
+	try {
+		if (access(PLACEHOLDER, 'x'))
+			return { path: PLACEHOLDER, placeholder: true };
+	}
+	catch (e) { }
+
+	return null;
 }
 
 /* Fetch a named ubus call argument; rpcd always passes a dictionary as
@@ -159,7 +179,9 @@ function proc_scan_pid() {
 			try {
 				const cmd = readfile('/proc/' + pid + '/cmdline');
 
-				if (cmd && index(cmd, LAUNCHER) >= 0)
+				/* Either the real launcher or the bundled fallback
+				 * counts as "the service is running". */
+				if (cmd && (index(cmd, LAUNCHER) >= 0 || index(cmd, PLACEHOLDER) >= 0))
 					return int(pid);
 			}
 			catch (e) { }
@@ -215,16 +237,6 @@ function service_state(port) {
 	return { running: false, pid: null, source: 'none' };
 }
 
-/* Is the launcher present and executable? */
-function launcher_ok() {
-	try {
-		return !!access(LAUNCHER, 'x');
-	}
-	catch (e) { }
-
-	return false;
-}
-
 /* Autostart == the /etc/rc.d/S* symlink created by `/etc/init.d/... enable`. */
 function autostart_enabled() {
 	try {
@@ -273,8 +285,13 @@ function process_uptime(pid) {
 
 /* Purely informational: scan the launcher for a version banner. */
 function launcher_version() {
+	const launcher = resolve_launcher();
+
+	if (launcher == null)
+		return null;
+
 	try {
-		const head = readfile(LAUNCHER);
+		const head = readfile(launcher.path);
 
 		if (head) {
 			const m = match(head, /[Pp]icoclaw[-_]?[Ll]auncher[^\n]*[Vv]ersion:[ \t]*([A-Za-z0-9._-]+)/) ||
@@ -354,8 +371,9 @@ function read_log_tail(path, max_lines) {
 const methods = {
 	get_status: {
 		call: function() {
-			const port  = get_port();
-			const state = service_state(port);
+			const port     = get_port();
+			const state    = service_state(port);
+			const launcher = resolve_launcher();
 
 			const out = {
 				running:      state.running,
@@ -363,7 +381,8 @@ const methods = {
 				port:         port,
 				autostart:    autostart_enabled(),
 				service:      SERVICE,
-				launcher:     LAUNCHER,
+				launcher:     launcher ? launcher.path : LAUNCHER,
+				placeholder:  launcher ? launcher.placeholder : false,
 				log_path:     get_log_path(),
 				state_source: state.source,
 			};
@@ -417,9 +436,9 @@ const methods = {
 
 			/* Fail early (with a useful message) instead of letting procd
 			 * enter a crash loop for a minute. */
-			if ((action == 'start' || action == 'restart') && !launcher_ok())
+			if ((action == 'start' || action == 'restart') && resolve_launcher() == null)
 				return { ok: false, action: action,
-				         message: 'launcher missing or not executable: ' + LAUNCHER };
+				         message: 'no launcher found (' + LAUNCHER + ' or ' + PLACEHOLDER + ')' };
 
 			let rc = 1;
 

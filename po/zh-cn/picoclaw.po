@@ -157,6 +157,9 @@ msgstr "打开“日志”页面时读取日志的位置。设为 `syslog` 会�
 msgid "Forwarded to the launcher as PICOCLAW_VERBOSITY (0..3)."
 msgstr "以 PICOCLAW_VERBOSITY 环境变量传给启动器（0..3）。"
 
+msgid "placeholder launcher, not the real picoclaw"
+msgstr "占位启动器（非真正的 picoclaw）"
+
 msgid "Backend"
 msgstr "后端"
 

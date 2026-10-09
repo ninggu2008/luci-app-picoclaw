@@ -1,16 +1,21 @@
 #!/bin/sh
 #
-# /opt/picoclaw/picoclaw-launcher
+# /usr/libexec/picoclaw-launcher-placeholder
 #
-# This file is the placeholder shipped by the luci-app-picoclaw package.
-# In a real deployment it is overlaid by the `picoclaw-webui` package
-# (or installed manually). The placeholder listens on TCP/18800 so the
-# LuCI app's "Open WebUI" link is functional out of the box.
+# Fallback launcher shipped by the luci-app-picoclaw package.
+#
+# The real launcher lives at /opt/picoclaw/picoclaw-launcher and is owned by
+# the `picoclaw-webui` package (or installed by hand) - this package never
+# touches that path, so the two cannot conflict in opkg.  The init script
+# uses /opt/picoclaw/picoclaw-launcher whenever it exists and is executable
+# and only falls back to this file otherwise, so the LuCI app's
+# "Open WebUI" link stays functional on a fresh install.
 #
 # Recognised environment variables (set by /etc/init.d/picoclaw-webui):
 #   PICOCLAW_PORT       - listen port (default 18800)
 #   PICOCLAW_VERBOSITY  - 0..3, controls logging
 #   PICOCLAW_LOGFILE    - log file path
+#   PICOCLAW_DOCROOT    - docroot used by the uhttpd based fallback
 #
 # Replacement rules (downstream packages):
 #   * Real picoclaw implementations MUST honour PICOCLAW_PORT and
@@ -62,9 +67,13 @@ code { background: #eee; padding: 0 .3em; }
 </head>
 <body>
 <h1>picoclaw placeholder launcher</h1>
+<p>The real picoclaw launcher was not found at
+<code>/opt/picoclaw/picoclaw-launcher</code>, so this built-in fallback is
+serving the WebUI port.</p>
 <p>version <code>$VERSION</code>, port <code>$PORT</code></p>
-<p>Replace <code>/opt/picoclaw/picoclaw-launcher</code> with the real
-picoclaw launcher to deploy the full feature set.</p>
+<p>Install or replace the real launcher at that path (make it executable,
+then run <code>/etc/init.d/picoclaw-webui restart</code>) to deploy the full
+feature set.</p>
 </body>
 </html>
 HTML
