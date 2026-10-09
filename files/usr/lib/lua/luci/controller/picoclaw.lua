@@ -119,15 +119,34 @@ local function write_json(tbl, status)
 end
 
 local function call_ubus(method, params)
-    local ubus = require "luci.ubus"
-    local conn = ubus.connect()
+    -- In LuCI Master / 26.x snapshots, `luci.ubus` is being removed in
+    -- favour of the bare `ubus` module. Try both, and pcall around each
+    -- step so a missing module / hung ubusd never makes the HTTP handler
+    -- hang (which is what kept the Status page stuck on "loading…").
+    local ubus_mod
+    pcall(function() ubus_mod = require "luci.ubus" end)
+    if not (ubus_mod and type(ubus_mod.connect) == "function") then
+        ubus_mod = nil
+        pcall(function() ubus_mod = require "ubus" end)
+    end
+    if not (ubus_mod and type(ubus_mod.connect) == "function") then
+        return nil, "ubus_module_unavailable"
+    end
+
+    local conn
+    pcall(function() conn = ubus_mod.connect() end)
     if not conn then
         return nil, "ubus_unavailable"
     end
-    local ok, res = pcall(conn.call, conn, "luci.picoclaw", method, params or {})
-    conn:close()
-    if not ok then
-        return nil, tostring(res)
+
+    local res
+    pcall(function()
+        res = conn:call("luci.picoclaw", method, params or {})
+    end)
+    pcall(function() conn:close() end)
+
+    if res == nil then
+        return nil, "ubus_call_returned_nil"
     end
     return res
 end

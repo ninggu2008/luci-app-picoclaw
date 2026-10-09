@@ -148,7 +148,20 @@
 
     function refresh() {
         setButtonsEnabled(false);
-        XHR.get(STATUS_URL, null, function (x, data) {
+        // Safety net: if the XHR object has no .always() (newer
+        // Promise-style XHR) or the request hangs entirely, force
+        // re-enable after 8s and flash a warning so the user is never
+        // stuck with all-grey buttons.
+        var safety = setTimeout(function () {
+            setButtonsEnabled(true);
+            var svc = $("ps-service");
+            if (svc && svc.innerHTML.indexOf("loading") !== -1) {
+                flash(STR.status_unavail, "warning");
+            }
+        }, 8000);
+
+        var xhr = XHR.get(STATUS_URL, null, function (x, data) {
+            clearTimeout(safety);
             try {
                 if (typeof data === "string") data = JSON.parse(data);
             } catch (e) { data = null; }
@@ -157,15 +170,33 @@
             } else {
                 flash((data && data.error) || STR.status_unavail, "warning");
             }
-        }).always(function () {
             setButtonsEnabled(true);
         });
+
+        // Belt-and-braces: support both the legacy Deferred API
+        // (.always) and a Promise-style return.
+        if (xhr) {
+            if (typeof xhr.always === "function") {
+                xhr.always(function () {
+                    clearTimeout(safety);
+                    setButtonsEnabled(true);
+                });
+            } else if (typeof xhr.then === "function") {
+                xhr.then(function () { clearTimeout(safety); setButtonsEnabled(true); },
+                         function () { clearTimeout(safety); setButtonsEnabled(true); });
+            }
+        }
     }
 
     function sendAction(name) {
         if (!name) return;
         flash(STR.action_sending.replace("%s", name), "info");
-        XHR.post(ACTION_URL, { action: name }, function (x, data) {
+        setButtonsEnabled(false);
+
+        var safety = setTimeout(function () { setButtonsEnabled(true); }, 8000);
+
+        var xhr = XHR.post(ACTION_URL, { action: name }, function (x, data) {
+            clearTimeout(safety);
             try {
                 if (typeof data === "string") data = JSON.parse(data);
             } catch (e) { data = null; }
@@ -178,9 +209,19 @@
                 flash(msg, "error");
             }
             refresh();
-        }).always(function () {
-            setButtonsEnabled(true);
         });
+
+        if (xhr) {
+            if (typeof xhr.always === "function") {
+                xhr.always(function () {
+                    clearTimeout(safety);
+                    setButtonsEnabled(true);
+                });
+            } else if (typeof xhr.then === "function") {
+                xhr.then(function () { clearTimeout(safety); setButtonsEnabled(true); },
+                         function () { clearTimeout(safety); setButtonsEnabled(true); });
+            }
+        }
     }
 
     function bind(name, handler) {

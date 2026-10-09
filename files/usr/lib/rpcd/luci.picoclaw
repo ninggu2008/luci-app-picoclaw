@@ -89,90 +89,94 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.get_status()
-    local uci = require "luci.model.uci".cursor()
-    local ubus = require "luci.ubus"
+    local out = {
+        running   = false,
+        pid       = nil,
+        port      = 18800,
+        autostart = false,
+        service   = SERVICE,
+        launcher  = LAUNCHER,
+        log_path  = LOG_PATH,
+    }
 
-    local port = tonumber(uci:get(UCI_CFG, UCI_SEC, "port")) or 18800
-
-    -- procd service state via ubus (no shell call).
-    -- `service list {name=...}` returns { "<name>" = { instances = { <inst> = { running, pid, ... } } } }.
-    local running, pid = false, nil
+    -- Port from UCI (defensive: pcall every step).
     do
-        local conn = ubus.connect()
-        if conn then
-            local ok, res = pcall(conn.call, conn, "service", "list", { name = SERVICE })
-            if ok and type(res) == "table" then
-                local svc = res[SERVICE]
-                if type(svc) == "table" and type(svc.instances) == "table" then
-                    for _, inst in pairs(svc.instances) do
-                        if inst.running then
-                            running = true
-                            pid = inst.pid
-                            break
+        local ok_uci, uci_mod = pcall(require, "luci.model.uci")
+        if ok_uci and uci_mod and uci_mod.cursor then
+            local ok_cur, cursor = pcall(uci_mod.cursor)
+            if ok_cur and cursor then
+                out.port = tonumber(cursor:get(UCI_CFG, UCI_SEC, "port")) or 18800
+            end
+        end
+    end
+
+    -- procd service state via ubus. Try `luci.ubus` first, then bare
+    -- `ubus` (LuCI Master / 26.x snapshots removed the wrapper).
+    do
+        local ok_ub, ubus = pcall(require, "luci.ubus")
+        if not (ok_ub and ubus and ubus.connect) then
+            ok_ub, ubus = pcall(require, "ubus")
+        end
+        if ok_ub and ubus and ubus.connect then
+            local ok_c, conn = pcall(ubus.connect)
+            if ok_c and conn then
+                local ok_call, res = pcall(conn.call, conn, "service", "list", { name = SERVICE })
+                if ok_call and type(res) == "table" then
+                    local svc = res[SERVICE]
+                    if type(svc) == "table" and type(svc.instances) == "table" then
+                        for _, inst in pairs(svc.instances) do
+                            if inst.running then
+                                out.running = true
+                                out.pid = inst.pid
+                                break
+                            end
                         end
                     end
                 end
+                pcall(conn.close, conn)
             end
-            conn:close()
         end
     end
 
-    -- autostart state via shell, but only the fixed init script
-    local autostart = false
-    do
-        local f = io.popen("/etc/init.d/" .. SERVICE .. " enabled; true")
-        if f then
-            autostart = (trim(f:read("*l") or "") == "enabled")
-            f:close()
-        end
-    end
+    -- Autostart via /etc/rc.d/<service> symlink. This avoids `io.popen`
+    -- entirely; many hardened / newer rpcd builds disable it and that
+    -- used to hang the whole HTTP handler.
+    out.autostart = file_exists("/etc/rc.d/" .. SERVICE)
 
-    -- uptime (best-effort, optional)
-    local uptime_s
-    if pid then
-        local data = read_file("/proc/" .. pid .. "/stat")
+    -- Uptime (best-effort, optional).
+    if out.pid then
+        local data = read_file("/proc/" .. out.pid .. "/stat")
         local btime
         local proc_stat = read_file("/proc/stat")
         if proc_stat then
             btime = tonumber(proc_stat:match("^btime%s+(%d+)"))
         end
         if data and btime then
-            -- field 22: starttime in clock ticks. The proc file has the
-            -- format `pid (comm) state ppid ...`; the comm may contain
-            -- spaces and is wrapped in parens, so we strip up to the last
-            -- `)` and then take the 20th whitespace-separated token (22-2
-            -- because pid+state are already consumed before comm).
             local fields_str = data:match("%)%s+(.*)$") or ""
             local tokens = {}
             for t in fields_str:gmatch("%S+") do tokens[#tokens + 1] = t end
             local starttime = tonumber(tokens[20])
-            local clk_tck   = 100  -- safe default; not relied on
+            local clk_tck   = 100  -- safe default
             if starttime then
-                uptime_s = os.time() - (btime + starttime / clk_tck)
+                local uptime_s = os.time() - (btime + starttime / clk_tck)
+                if uptime_s and uptime_s > 0 then
+                    out.uptime_s = math.floor(uptime_s)
+                end
             end
         end
     end
 
-    -- launcher version banner (purely informational, no execution)
-    local version
-    if file_exists(LAUNCHER) then
-        local head = read_file(LAUNCHER) or ""
-        local ver = head:match("[Pp]icoclaw[%-_]?launcher[%-_%s]*[Vv]ersion:%s*([%w%.%-]+)")
-                 or head:match("VERSION=[\"']*([%w%.%-]+)")
-        if ver then version = ver end
+    -- launcher version banner (purely informational, no execution).
+    do
+        local head = read_file(LAUNCHER)
+        if head then
+            local ver = head:match("[Pp]icoclaw[%-_]?launcher[%-_%s]*[Vv]ersion:%s*([%w%.%-]+)")
+                     or head:match("VERSION=[\"']*([%w%.%-]+)")
+            if ver then out.version = ver end
+        end
     end
 
-    return {
-        running   = running,
-        pid       = pid,
-        port      = port,
-        autostart = autostart,
-        uptime_s  = (uptime_s and uptime_s > 0) and math.floor(uptime_s) or nil,
-        version   = version,
-        launcher  = LAUNCHER,
-        log_path  = LOG_PATH,
-        service   = SERVICE,
-    }
+    return out
 end
 
 -- ---------------------------------------------------------------------------

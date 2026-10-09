@@ -7,6 +7,12 @@
     here are documentation, not the security boundary.
 --]]
 
+-- In LuCI Master / ucode-bridge compat mode the dispatcher no longer
+-- injects `_` (gettext) as a Lua global when the CBI model file is
+-- loaded. We have to require it explicitly.
+local i18n = require "luci.i18n"
+local _ = i18n.translate or i18n.gettext or function(s) return s end
+
 local m = Map("picoclaw", _("picoclaw"),
     _("WebUI configuration for picoclaw. Changes are applied immediately "
     .. "and the daemon is restarted; do not edit this section during a "
